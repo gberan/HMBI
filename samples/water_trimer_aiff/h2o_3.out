@@ -1,0 +1,146 @@
+This job has allocated the following 4 nodes:
+localhost localhost localhost localhost
+Parallel HMBI.   NPROCS = 4
+localhost
+localhost
+localhost
+localhost
+
+LAM 7.1.4/MPI 2 C++/ROMIO - Indiana University
+
+Running LAM
+/home/gberan/hmbi_merge/samples/3b_disp
+Running: /home/software/lam-7.1.4-intel_v9.1//bin/mpirun  -np 4 /home/gberan/hmbi_merge/bin/hmbi.parallel h2o_3.in 4
+Running MPI parallel version with 4 processors
+
+ * * * * * * * * * * * * * * * * * * * * * * *
+ *                                           *
+ *  Hybrid Many-Body Interaction QM/MM Code  *
+ *                                           *
+ *       by Greg Beran, Kaushik Nanda        *
+ *             and Ali Sebetci               *
+ *                                           *
+ *   University of California, Riverside     *
+ *                                           *
+ *                Nov. 2009                  *
+ *                                           *
+ * * * * * * * * * * * * * * * * * * * * * * *
+
+Job: Water Trimer
+
+Directory /home/gberan/hmbi_merge/samples/3b_disp//qchem exists.
+Directory /home/gberan/hmbi_merge/samples/3b_disp//aiff exists.
+
+The system contains 3 monomers, 3 dimers
+
+Using an ab initio force field to compute many-body interactions
+Finding local coordinates
+Rotation Angle (in radian)       2.029164          
+Rotation Angle (in degrees)     116.262542          
+Rotation vector       -0.243991            0.384483             0.890304          
+O        0.000000     0.000000     0.000000  Angstroms 
+H        0.000000    -0.000000     0.942585  Angstroms 
+H       -0.490000    -0.776039    -0.265866  Angstroms 
+Setting IP for monomer 1 to 0.463800
+Finding local coordinates
+Rotation Angle (in radian)       3.106163          
+Rotation Angle (in degrees)     177.970050          
+Rotation vector        0.911390            0.292437             0.289566          
+O        0.000000     0.000000     0.000000  Angstroms 
+H        0.000000     0.000000     0.943007  Angstroms 
+H       -0.458932     0.795487    -0.264174  Angstroms 
+Setting IP for monomer 2 to 0.463800
+Finding local coordinates
+Rotation Angle (in radian)       0.858626          
+Rotation Angle (in degrees)      49.195622          
+Rotation vector        0.428293            0.555585            -0.712664          
+O        0.000000     0.000000     0.000000  Angstroms 
+H        0.000000     0.000000     0.942845  Angstroms 
+H       -0.463712    -0.791844    -0.266955  Angstroms 
+Setting IP for monomer 3 to 0.463800
+Cluster initialization complete
+
+Creating QM Monomer jobs...  Creating QM Dimer jobs.
+Creating MM Monomer jobs...  Creating MM Dimer jobs.
+
+Need to run 3 QM monomer jobs and 3 dimer jobs.
+The jobs will be run in parallel on 3 slave processors
+
+Running 3 QM Monomer jobs:
+ ...  (3)
+
+Running 3 QM Dimer jobs:
+ ...  (3)
+
+Computing ab initio Polarizable Force Field Parameters for 3 Monomers
+ ...  (3)
+
+Done running parallel jobs
+All 9 jobs completed successfully
+
+Ab initio two-body dispersion coefficients for monomer 1:
+O: C6 = 21.968002, C8 = 293.773025, C10 = 1853.651691
+H: C6 = 0.724807, C8 = 0.000000, C10 = 0.000000
+H: C6 = 0.635600, C8 = 0.000000, C10 = 0.000000
+
+Ab initio two-body dispersion coefficients for monomer 2:
+O: C6 = 20.984067, C8 = 247.169393, C10 = 1403.440505
+H: C6 = 0.836781, C8 = 0.000000, C10 = 0.000000
+H: C6 = 0.763944, C8 = 0.000000, C10 = 0.000000
+
+Ab initio two-body dispersion coefficients for monomer 3:
+O: C6 = 22.026877, C8 = 293.180808, C10 = 1841.757521
+H: C6 = 0.721591, C8 = 0.000000, C10 = 0.000000
+H: C6 = 0.626271, C8 = 0.000000, C10 = 0.000000
+
+Evaluating ab initio force field contribution for dimer (1,2)
+  Tang-Toennies damping factor of 1.450 applied to self-consisted induction.
+  Induction energies converged after 12 iterations
+  Total AIFF energy for dimer (1,2) = -39.110178 kJ/mol
+
+Evaluating ab initio force field contribution for dimer (1,3)
+  Tang-Toennies damping factor of 1.450 applied to self-consisted induction.
+  Induction energies converged after 5 iterations
+  Total AIFF energy for dimer (1,3) = -3.612371 kJ/mol
+
+Evaluating ab initio force field contribution for dimer (2,3)
+  Tang-Toennies damping factor of 1.450 applied to self-consisted induction.
+  Induction energies converged after 12 iterations
+  Total AIFF energy for dimer (2,3) = -39.613602 kJ/mol
+
+ -----------------------------------------------------------------
+  ** Compute ab initio force-field energy for the full system **
+ -----------------------------------------------------------------
+
+Computing classical electrostatic interactions for the full cluster.
+  Tang-Toennies damping factor of 1.450 applied to self-consisted induction.
+  Induction energies converged after 14 iterations
+
+
+*** Total AIFF energy for full system =     -86.1646 kJ/mol
+
+QM 1-body    =  -224.882689681 hartrees
+QM 2-body    =    -0.020531389 hartrees
+MM full      =   -86.165 kJ/mol
+MM 1-body    =     0.000 kJ/mol
+MM 2-body    =   -82.336 kJ/mol
+MM many-body =    -3.828 kJ/mol
+
+QM 1+2-body energy =  -224.903221070 hartrees
+MM many-body energy = -3.828 kJ/mol (-1.276 kJ/mol per monomer)
+HMBI Energy =  -224.904679259 hartrees
+
+
+HMBI Job Succesful!!!
+Total job wall time = 126 seconds
+Cleaning LAM
+killing processes,           n0 (o)... done      
+closing files,           n0 (o)... done      
+sweeping traces,           n0 (o)... done      
+cleaning up registered objects,           n0 (o)... done      
+sweeping messages,           n0 (o)... done      
+halting LAM
+
+LAM 7.1.4/MPI 2 C++/ROMIO - Indiana University
+
+Trying to delete temp file

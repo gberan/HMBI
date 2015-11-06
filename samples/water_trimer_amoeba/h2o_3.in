@@ -1,0 +1,39 @@
+$comment
+Water Trimer
+$end
+
+$hmbi
+jobtype	= energy
+analyze_only = true
+mm_code = aiff
+$end
+
+$molecule
+0 1
+--
+0 1 0.4638
+O       -0.571270    2.322980   -0.003174
+H       -0.541626    2.994645    0.657473
+H        0.319714    1.986524   -0.080413
+--
+0 1 0.4638
+O        2.038411    1.261129   -0.102281
+H        2.545757    1.390343   -0.886606
+H        2.008500    0.316696    0.040400
+--
+0 1 0.4638
+O        1.831197   -1.536089    0.156570
+H        2.127985   -1.971116    0.938635
+H        0.922213   -1.803155    0.031130
+$end
+
+$qchem
+exchange = hf
+basis = sto-3g
+$end
+
+$aiff
+CamCaspHome = /home/software/camcasp-5.2.00
+OrientBasisSet = aug-cc-pvdz
+DampingFactor = 1.45
+$end
