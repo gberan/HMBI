@@ -1,0 +1,130 @@
+#!/bin/sh
+
+# Script for running the HMBI executable, selecting serial or
+# MPI (parallel) versions according to the number of nodes available.
+
+# Place where the HMBI executables reside
+EXE_PATH="$HMBI/bin"
+
+# Version for LAM MPI (http://www.lam-mpi.org)
+export MPIHOME=/home/software/lam-7.1.4-intel_v9.1/
+export LAMHOME=$MPIHOME
+# Make sure that our MPI version is first in PATH
+export PATH=${MPIHOME}/bin:$PATH
+
+# Name of serial and parallel HMBI executables
+HMBIEXE="hmbi.serial"
+HMBIEXE_PAR="hmbi.parallel"
+
+# Utility commands:
+# Remote-shell: Use Secure Shell (SSH) with appropriate flags
+RSH="ssh -n -x "
+# Super-kill (ftp://fast.cs.utah.edu/pub/skill/)
+KILL="skill -v -9"
+
+#-----------------------------------------------------------------
+
+# Default is serial job
+NPROCS=1
+
+# Sun Grid Engine
+if [ "$PE_HOSTFILE" ] ; 
+then
+        echo "Contents of the PE_HOSTFILE"        
+        echo "--------------------------------------"
+        cat $PE_HOSTFILE
+        echo "--------------------------------------"
+        ###echo "Plan to use $NSLOTS processors on $NHOSTS nodes"
+
+
+        # GJB prepare lamboot list
+        cat $PE_HOSTFILE | awk '{print $1}' > tmp.$JOB_ID
+        echo "My pruned HOSTFILE ="
+        echo "--------------------------------------"
+        cat tmp.$JOB_ID
+        echo "--------------------------------------"
+
+        MACHINEFILE=tmp.$JOB_ID
+
+        # set the number of processors
+        NPROCS=$NSLOTS
+fi
+
+# Check for local host file that overrides others
+if [ -e 'hosts.txt' ]; then
+        MACHINEFILE='hosts.txt'      
+        NPROCS=`wc -l < $MACHINEFILE`
+fi
+
+# Define number of processors
+if  [ "$MACHINEFILE" ]; 
+then 
+        echo This job has allocated the following $NPROCS nodes:
+        echo `cat $MACHINEFILE`
+fi
+
+#-----------------------------------------------------------------
+
+# Run serial or parallel HMBI (using LAM/MPI)
+        
+if test ${NPROCS} -gt 1
+then
+        echo "Parallel HMBI.   NPROCS = $NPROCS"
+
+        # The multi-CPU (parallel) version using MPI message-passing
+        # list nodes 
+        cat $MACHINEFILE
+
+        # Verify nodes 
+        $MPIHOME/bin/recon -v $MACHINEFILE
+
+        # Booting LAM
+        $MPIHOME/bin/lamboot -v $MACHINEFILE
+
+        echo "Running LAM"
+        echo $PWD
+        #MPIRUN_ARGS="-O -np ${NPROCS}"
+        MPIRUN_ARGS=" -np ${NPROCS}"
+        ARGS="${NPROCS}"
+
+	# Print the execution string, then execute
+        echo "Running: $MPIHOME/bin/mpirun ${MPIRUN_ARGS} ${EXE_PATH}/${HMBIEXE_PAR} $1 $ARGS"
+        $MPIHOME/bin/mpirun ${MPIRUN_ARGS} ${EXE_PATH}/${HMBIEXE_PAR} $1 $ARGS
+
+        echo "Cleaning LAM"
+        # Cleaning LAM 
+        $MPIHOME/bin/lamclean -v 
+
+        echo "halting LAM"
+        # Terminationg LAM 
+        $MPIHOME/bin/lamhalt
+
+        # Clean up after parallel jobs (beware in case of SMP-nodes)
+        for node in `cat $MACHINEFILE`
+        do
+                $RSH $node $KILL hmbi.run
+        done
+
+        # Delete the temporary file created above
+        echo "Trying to delete temp file"
+        if [ -e "tmp.$JOB_ID" ]; then
+                echo "deleting tmpfile"
+                rm -f tmp.$JOB_ID
+        fi
+
+
+elif test ${NPROCS} -eq 1
+then      
+        #echo "Serial HMBI"
+        ### The single-CPU (serial) version
+        #echo Running ${EXE_PATH}/${HMBIEXE} $1
+        exec ${EXE_PATH}/${HMBIEXE} ${ARGS} $1
+
+else
+        echo Invalid number of processors: ${NPROCS}
+        echo The list of machines given to HMBI was:
+        cat $MACHINEFILE 
+        exit 1
+fi
+
+

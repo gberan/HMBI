@@ -1,0 +1,52 @@
+# Use Makefile.standalone in case of the stand-alone code
+# Use Makefile in case this is included in ChemShell
+
+# COPYRIGHT
+#
+#  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
+#  Tom Keal (keal@mpi-muelheim.mpg.de)
+#
+#  This file is part of DL-FIND.
+#
+#  DL-FIND is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU Lesser General Public License as 
+#  published by the Free Software Foundation, either version 3 of the 
+#  License, or (at your option) any later version.
+#
+#  DL-FIND is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU Lesser General Public License for more details.
+#
+#  You should have received a copy of the GNU Lesser General Public 
+#  License along with DL-FIND.  If not, see 
+#  <http://www.gnu.org/licenses/>.
+#
+
+all:	
+	(if test -f Makefile; then \
+	$(MAKE) -f Makefile; else \
+	$(MAKE) -f Makefile.standalone; fi)
+
+man:
+	$(MAKE) -f Makefile.standalone man
+
+doc:
+	$(MAKE) -f Makefile.standalone doc
+
+bib:
+	$(MAKE) -f Makefile.standalone bib
+
+clean:
+	(if test -f Makefile; then \
+	$(MAKE) -f Makefile clean; else \
+	$(MAKE) -f Makefile.standalone clean; fi)
+
+# ChemShell: make exe
+exe:
+	$(MAKE) -f Makefile exe
+
+parallel:
+	(if test -f Makefile; then \
+	$(MAKE) -f Makefile parallel; else \
+	$(MAKE) -f Makefile.standalone parallel; fi)
