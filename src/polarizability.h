@@ -5,9 +5,9 @@
 #include <math.h>
 using std::istringstream; // part of iostream
 #include <stdio.h>
-#include <fstream.h>
+#include <fstream>
 #include <cassert>
-#include <iomanip.h>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <stdlib.h>

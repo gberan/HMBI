@@ -17,7 +17,7 @@ extern "C" void dsyev_(char *job,  char *type, int *N, double *A, int *LDAs,
 		       double* lambda, double *work, int *lwork, int *info); 
 
 extern "C" void dgetrf_(int *M, int *N, double *A, int *LDA, double *IPIV, 
-			int *INFO);
+			int *info);
 
 extern "C" void dgetri_(int *N, double *A, int *LDA, double *IPIV, 
 			double *work, int *lwork, int *info);
@@ -26,15 +26,28 @@ extern "C" void dgesvd_(char *jobu, char *jobvt, int *M, int *N, double *A,
 			int *LDA, double *S, double *U, int *LDU, double *VT,
 			int *LDVT, double *work, int *lwork, int *info);
 
-extern "C" void dgesv_(int *N, int *NHRS, double *A, int* LDA, int *ipiv, 
+
+extern "C" void dgesv_(int *N, int *NHRS, double *A, int* LDA, int *ipiv,  // JDH
 		       double* B, int* LDB, int *info);
 
-extern "C" void dgesvx_(char *FACT, char *TRANS, int *N, int *NHRS, double *A, 
+extern "C" void dgesvx_(char *FACT, char *TRANS, int *N, int *NHRS, double *A,   // JDH
 			int* LDA, double *AF, int *LDAF, int *IPIV, char *EQUED, 
 			double *R, double *C, double *B, int *LDB, double *X, 
 			int* LDX, double *RCOND, double *FERR, double *BERR, 
 			double *WORK, int* IWORK, int *INFO);
 
+
+extern "C" void dgelsd_(int *M, int *N, int *NRHS, double *A, int *LDA, 
+			double *B, int *LDB, double *S, double *RCOND, 
+			int *RANK, double *WORK, int *LWORK, int *IWORK, 
+			int *INFO );  // JDH Works for some matricies, non-sense for others
+
+// Strange run time error: free(): invalid next size (fast)
+extern "C" void dgelss_(int *M, int *N, int *NRHS, double *A, int *LDA, 
+			double *B, int *LDB, double *S, double *RCOND, 
+			int *RANK, double *WORK, int *LWORK, int *INFO ); // JDH
+
+extern "C" void dgels_(char *TRANS, int *M, int *N, int *NRHS, double *A, int *LDA, double *B, int *LDB, double *WORK, int *LWORK, int *INFO);  // JDH
 
 
 /*
@@ -120,12 +133,17 @@ class Matrix {
   // The eigenvalues are stored in the output Vector.
   Vector FindEigenvalues(); // gets eigenvalues only
   Vector Diagonalize(); // gets eigenvalues & eigenvectors (as column vectors).
-  Vector SVD(Matrix &U, Matrix &VT, bool find_condition=false); // computes Singular Value Decomposition
+  Vector SVD(Matrix &U, Matrix &VT); // computes Singular Value Decomposition
+  double Determinant();//computes the determinant of a matrix, overwrites input matrix by the LU decomposition
   void Inverse(); // compute matrix inverse for square matrix
-  void SolveLinearEquations(Vector &b); // solve A*x = b, solution vector overwrites b.  Destroys A.
-  void ExpertSolveLinearEquations(Vector &b); // solve A*x = b, numerically fancier version.  
 
+  void SolveLinearEquations(Vector &b); // JDH: solve A*x = b, solution vector overwrites b.  Destroys A. 
+  void ExpertSolveLinearEquations(Vector &b); // JDH:  solve A*x = b, numerically fancier version.
+  void ExpertSolveLinearEquations(Vector &b, bool* pass); // JDH
+  void SolveLeastSquares( Vector &b ); // JDH Compute min. norm soln to 2-norm(| b - A*x |)
+  void SolveLeastSquares( Vector &b, bool* pass );   
 
+  
   double TwoNorm(); // compute matrix 2 norm
 
   //scale with a scalar
@@ -133,7 +151,7 @@ class Matrix {
   // Overwrite matrix with its transpose
   void Transpose();
 
-  
+  double Trace(); // returns the trace of a matrix; // JDH
 
   // dot product of vectors can be a special case of 1-D matrices
  
@@ -159,14 +177,14 @@ class Matrix {
   void SetColumnVector(Vector vec, int icol);
   void SetRowVector(Vector vec, int irow);
 
-  // Set a block of a matrix, with top left corner at (irow,icol)
-  Matrix GetBlock(int nrows, int ncols, int row_offset, int col_offset);
-  void SetBlock(const Matrix& block, int row_offset, int col_offset);
-  void AddBlockToMatrix(const Matrix& block, int row_offset, int col_offset);
-
   void ReorderRows(int i, int j);
   void ReorderColumns(int i, int j);
+  void SortEigenValuesAndVectors( Vector ofEigenValues);
+  void PrintHessian(string title);
 
+  Matrix BuildMatrixFromBlocks(Matrix& other);
+
+  Vector StackColumnsOfMatrix();
 
 };
 

@@ -1,40 +1,69 @@
 # Set up different object names for serial and parallel versions
-SER_OBJS = main_ser.o monomer_ser.o atom_ser.o dimer_ser.o cluster_ser.o cluster_ewald_ser.o params_ser.o \
+SER_OBJS = main_ser.o monomer_ser.o atom_ser.o dimer_ser.o cluster_ser.o params_ser.o sphere_grid_ser.o nmr_ser.o ee_ser.o\
 vector_ser.o matrix_ser.o opt_ser.o multipole_ser.o polarizability_ser.o \
-dlf_interface_ser.o 
+dlf_interface_ser.o knitro_interface_ser.o supercell_ser.o quasiharmonic_ser.o
 
-PAR_OBJS = main_par.o monomer_par.o atom_par.o dimer_par.o cluster_par.o cluster_ewald_ser.o params_par.o \
+PAR_OBJS = main_par.o monomer_par.o atom_par.o dimer_par.o cluster_par.o params_par.o sphere_grid_par.o nmr_par.o ee_par.o\
 vector_par.o matrix_par.o opt_par.o multipole_par.o polarizability_par.o \
-dlf_interface_par.o 
+dlf_interface_par.o knitro_interface_par.o supercell_par.o quasiharmonic_par.o
+
+# Objects for my solvation utility
+#SOLV_OBJS = solvate.o vector_ser.o matrix_ser.o monomer_ser.o atom_ser.o params_ser.o multipole_ser.o \
+#polarizability_ser.o
 
 # Serial version macros
-CC = g++
-#CC = icpc
-FC = gfortran
+#CC = g++
+#FC = gfortran
+CC = icpc
+FC = ifort
 
 # Parallel version macros
-MPICC = mpiCC
+MPICC = /home/software/qc_ext_libs/openmpi/bin/mpiCC
+
+
 PARALLEL = -DPARALLEL
 
+# K-Nitro optimizer - experimental.  Uncomment the next three lines and provide 
+# the libraries to activate it:
+#KNITRO = -DKNITRO
+#LD_KNITRO = lib_knitro.a
+#KNITRO_INC = knitro_interface.h knitro.h
+
 # Macros that apply to all versions
-LDFLAGS =  -L/opt/intel/fce/9.1.052/lib/ -lifcore -limf -L/opt/intel/mkl/9.1.023/lib/em64t -lguide -lmkl -lmkl_lapack -lmkl_em64t -lpthread -lifport
-DEBUG = -g
+
+#LITHIUM:    
+#LDFLAGS =  -L/opt/intel/compilers_and_libraries/linux/compiler/lib/intel64 -lifcore -limf -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+
+
+# MAV:
+LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -limf -lifcore -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+
+
+#/opt/intel/compilers_and_libraries_2016.3.210/linux/mkl/lib/intel64
+# -lguide -lmkl -lmkl_lapack -lmkl_em64t -lpthread -lifport
+#DEBUG = -g -std=gnu++11 -O0
+DEBUG = -g -C 
 CFLAGS = ${DEBUG} -Wno-deprecated 
 
 # Begin targets
 
+
 serial: dlfind ${SER_OBJS}
-	${CC} ${CFLAGS} ${INCLUDES} ${SER_OBJS} ${LDFLAGS} lib_dlfind.a  -o hmbi.serial
+	${CC} ${CFLAGS} ${INCLUDES} ${SER_OBJS} ${LDFLAGS} ${LD_KNITRO} lib_dlfind.a  -o hmbi.serial
 
 parallel: ${PAR_OBJS}
-	${MPICC} ${CFLAGS} ${INCLUDES} ${PAR_OBJS} ${LDFLAGS} lib_dlfind.a -o hmbi.parallel
+	${MPICC} ${CFLAGS} ${INCLUDES} ${PAR_OBJS} ${LDFLAGS} ${LD_KNITRO} lib_dlfind.a -o hmbi.parallel
 
-all: dlfind serial parallel 
+all: dlfind serial parallel #solvate
+
+#solvate: ${SOLV_OBJS}
+#	${CC} ${CFLAGS} ${SOLV_OBJS} ${LDFLAGS} -o solvate
 
 
 install: all links
 	mv hmbi.serial ../bin
 	mv hmbi.parallel ../bin
+	#mv solvate ../bin
 
 links:
 	ln -sf ../bin/hmbi.run ../bin/hmbi
@@ -49,14 +78,14 @@ dlfind:
 
 
 # Notation: $@ = target name, $< = source name
-%_ser.o: %.C atom.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h \
-	params.h polarizability.h vector.h dlf_interface.h 
-	 $(CC) -c -o $@ $(CFLAGS)  $<
+%_ser.o: %.C atom.h supercell.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h sphere_grid.h nmr.h ee.h\
+	opt.h params.h polarizability.h vector.h dlf_interface.h  quasiharmonic.h $(KNITRO_INC) 
+	 $(CC) -c -o $@ $(CFLAGS) $(KNITRO) $<
 
-%_par.o: %.C atom.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h \
-	params.h polarizability.h vector.h dlf_interface.h  
-	 $(MPICC) -c -o $@ $(CFLAGS) $(PARALLEL) $<
+%_par.o: %.C atom.h  supercell.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h sphere_grid.h nmr.h ee.h\
+	opt.h params.h polarizability.h vector.h dlf_interface.h quasiharmonic.h $(KNITRO_INC) 
+	 $(MPICC) -c -o $@ $(CFLAGS) $(KNITRO) $(PARALLEL) $<
 
-%.o: %.C atom.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h \
-	params.h polarizability.h vector.h dlf_interface.h 
-	 $(CC) -c -o $@ $(CFLAGS) $<
+%.o: %.C atom.h supercell.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h sphere_grid.h nmr.h ee.h\
+	opt.h params.h polarizability.h vector.h dlf_interface.h quasiharmonic.h  $(KNITRO_INC)
+	 $(CC) -c -o $@ $(CFLAGS) $(KNITRO) $<

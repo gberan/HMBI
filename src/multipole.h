@@ -5,9 +5,9 @@
 #include <math.h>
 using std::istringstream; // part of iostream
 #include <stdio.h>
-#include <fstream.h>
+#include <fstream>
 #include <cassert>
-#include <iomanip.h>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <stdlib.h>
@@ -51,23 +51,21 @@ class Multipole {
 
 
   Multipole& Scale(double factor);
-  Multipole operator+(const Multipole& other); // allows mixed-rank addition
-  Multipole& operator+=(const Multipole& other); // requires identical ranks
+  Multipole operator+(const Multipole& other);
   Multipole& operator=(const Multipole& other);
 
   // Some basic functions
   int GetRank() const {return Rank;};
   int GetLength() const {return Nmom;};
   Vector GetMoments() const {return Moments;};
-
-  // debug function, zeroes out all elements except dipole/quadrupole
-  // (for testing some induction code)
-  void MaskElements();
-
+  Vector GetMomentsVector() {return Moments;}; // JDH get rid of this?
 
   // Print out the multipoles
   void Print(string title);
   void VectorPrint(string title) {Moments.Print(title);};
+
+  // JDH NMR code
+  Vector Spherical_to_Cartesian(Multipole Spherical);
 
 };
 

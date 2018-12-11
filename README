@@ -1,0 +1,55 @@
+There are a few lines you must edit in order to get HMBI working. Do the following:
+
+$ cd bin/
+$ pwd
+$ nano hmbi.run
+
+
+----------------
+### Change the following line to the current location of this bin folder (the output of pwd above):
+EXE_PATH="/home/jessica/hmbi_stable/bin"
+
+### Change this line to your path to your openmpi executables (execute `which mpirun` to get the path):
+export MPIHOME=/home/software/qc_ext_libs/openmpi/
+
+----------------
+
+$ cd ../src/
+$ nano makefile
+
+----------------
+### Uncomment the compiler of your choice
+#CC = g++
+#FC = gfortran
+#CC = icpc
+#FC = ifort
+
+### Change this path to the location of your mpiCC executable (execute `which mpiCC` to get the path)
+MPICC = /home/software/qc_ext_libs/openmpi/bin/mpiCC
+
+### Update the library path to your compilers
+LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -limf -lifcore -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+----------------
+
+Finally install HMBI
+
+For a serial compilation only:
+$ make serial
+
+For a parallel compilation only:
+$ make serial
+
+For all compilations:
+$ make all
+
+Move the executable to your bin directory:
+$ make install
+
+Now add your bin directory to either your .bashrc or .cshrc
+
+.cshrc:
+set path = ( $path /home/jessica/hmbi/bin)
+
+.bashrc:
+export PATH="/home/jessica/hmbi/bin:$PATH"
+

@@ -16,16 +16,16 @@
 !!
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Revision: 1.1 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dl-find.f90 $
-!! $Id: dl-find.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2014-05-29 17:27:29 +0100 (Thu, 29 May 2014) $
+!! $Revision: 538 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dl-find.f90 $
+!! $Id: dl-find.f90 538 2014-05-29 16:27:29Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -91,6 +91,9 @@ subroutine dl_find(nvarin,nvarin2,nspec,master&
   ! 
 ! **********************************************************************
 
+  ! Flag for dlf_fail - needs to be set before anything else
+  glob%cleanup = 0
+
   ! read input parameters, set defaults
   call dlf_read_in(nvarin,nvarin2,nspec,master)
 
@@ -135,6 +138,7 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
   use dlf_stat, only: stat
   use dlf_allocate, only: allocate,deallocate
   use dlf_store, only: store_initialise
+  use dlf_constants, only: dlf_constants_init,dlf_constants_get
   implicit none
   integer   ,intent(in)    :: nvarin ! number of variables to read in
                                      !  3*nat
@@ -148,13 +152,18 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
   integer, allocatable :: spec(:)
   integer              :: ivar,nat,nframe,nmass,nweight,nz,tsrel
   integer              :: massweight,ierr
+  real(rk)             :: svar
   integer              :: tdlf_farm
   integer              :: n_po_scaling
+  integer              :: coupled_states
+  integer              :: micro_esp_fit
 ! **********************************************************************
 
   pi=4.D0*datan(1.D0)
 
   call time_init
+  call dlf_constants_init
+    !call dlf_constants_get("NONE",svar) ! to cause printing of output
   call clock_start("TOTAL")
 
   if(nvarin<=0) call dlf_fail("A positive number of variables is needed")
@@ -170,6 +179,7 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
   ! set parameters to something useless to recognise user input
   call dlf_default_init(nspec,spec)
   nz=0
+  nweight=0
 
   ! ====================================================================
   ! The input arrays and their meaning:
@@ -187,13 +197,16 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
   !    nz      entries of nuclear charges (same order as coords)
   !    5*ncons entries of constraints (typ, atom1,atom2, atom3, atom4)
   !    2*nconn entries of connections (atom1 atom2)
-  !    i.e. nspec= nat + nz + 5*ncons + 2*nconn
+  !    nat     entries of microiterative region specification
+  !    i.e. nspec= nat + nz + 5*ncons + 2*nconn + nat
   ! ====================================================================
   ! get input parameters
   ivar=1
   massweight=0
   tdlf_farm=1 ! set default value
   n_po_scaling=0 ! set default value
+  coupled_states=1 ! set default value
+  micro_esp_fit=0 ! set default value
   call dlf_get_params(nvarin,max(nvarin2,1),max(nspec,1), &
       tmpcoords,tmpcoords2,spec, ierr, &
       glob%tolerance,printl,glob%maxcycle,glob%maxene,&
@@ -205,15 +218,18 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
       glob%timestep,glob%fric0,glob%fricfac,glob%fricp, &
       glob%imultistate, glob%state_i, glob%state_j, &
       glob%pf_c1, glob%pf_c2, glob%gp_c3, glob%gp_c4, glob%ln_t1, glob%ln_t2, &
-      printf, glob%tolerance_e, glob%distort, massweight, glob%minstep, &
+      printf, glob%tolerance_e, glob%tolerance_max_g, glob%tolerance_rms_g, &
+      glob%distort, massweight, glob%minstep, &
       glob%maxdump, glob%task, glob%temperature, &
       glob%po_pop_size, glob%po_radius_base, glob%po_contraction, &
       glob%po_tol_r_base, glob%po_tolerance_g, glob%po_distribution, &
       glob%po_maxcycle, glob%po_init_pop_size, glob%po_reset, &
       glob%po_mutation_rate, glob%po_death_rate, glob%po_scalefac, &
-      glob%po_nsave,glob%ntasks,tdlf_farm,n_po_scaling)
-
-  ! write(*,*) 'printl = ',printl
+      glob%po_nsave,glob%ntasks,tdlf_farm,n_po_scaling, &
+      glob%neb_climb_test, glob%neb_freeze_test, glob%nzero, &
+      coupled_states, glob%qtsflag, &
+      glob%imicroiter, glob%maxmicrocycle, &
+      glob%init_tr, micro_esp_fit)
 
   if(ierr/=0) call dlf_fail("Failed to read parameters")
 
@@ -230,9 +246,11 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
   glob%tatoms=(ivar==1)
   glob%tsrelative=(tsrel==1)
   glob%massweight=(massweight==1)
+  glob%micro_esp_fit = (micro_esp_fit == 1)
 
   ! Do we need to calculate the interstate coupling gradient?
-  if (glob%imultistate > 1) glob%needcoupling = 1
+  ! If coupled_states is false, coupling = zero.
+  if (glob%imultistate > 1 .and. coupled_states == 1) glob%needcoupling = 1
 
   ! set parameters that have not been set by the user to the default
   ! this routine defines the default values
@@ -240,20 +258,20 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
 
   ! check consistency of the array sizes:
   nat=nvarin/3
-  if(nspec/=nat+nz+5*glob%ncons+2*glob%nconn) then
+  if(nspec/=nat+nz+5*glob%ncons+2*glob%nconn+nat) then
     write(stdout,'("nspec ",i6)') nspec
     write(stdout,'("nat   ",i6)') nat
     write(stdout,'("nz    ",i6)') nz
     write(stdout,'("ncons ",i6)') glob%ncons
     write(stdout,'("nconn ",i6)') glob%nconn
-    write(stdout,'("nspec should be: nat + nz + 5*ncons + 2*nconn")')
+    write(stdout,'("nspec should be: nat + nz + 5*ncons + 2*nconn + nat")')
     call dlf_fail("Inconsistent size of array spec - interface error")
   end if
 
-  if(nvarin2/=nframe*nat*3+nweight+nmass+n_po_scaling &
+  if(glob%tatoms.and.(nvarin2/=nframe*nat*3+nweight+nmass &
       .or. (nweight/=0.and.nweight/=nat) &
       .or. (nmass/=0.and.nmass/=nat) &
-      .or. (n_po_scaling < 0) ) then
+      .or. (n_po_scaling < 0) ) ) then
     write(stdout,'("nvarin2      ",i6)') nvarin2
     write(stdout,'("nframe       ",i6)') nframe
     write(stdout,'("nat          ",i6)') nat
@@ -291,6 +309,7 @@ subroutine dlf_read_in(nvarin,nvarin2,nspec,master)
 
   ! initialise (reset) all statistics counters
   stat%sene=0
+  stat%pene=0
   call dlf_stat_reset
 
   ! initialise dlf_store
@@ -323,14 +342,22 @@ subroutine dlf_run( &
 #ifdef GAMESS
   real(rk) :: core(*) ! GAMESS memory, not used in DL-FIND
 #endif
-  integer  :: iimage,ivar,status
+  integer  :: iimage,ivar,status,image_status,taskfarm_mode
+  integer  :: icount, kiter
   real(rk) :: svar
   logical  :: tconv,trestarted,trerun_energy
   logical  :: needhessian ! do we need a Hessian?
   logical  :: testconv ! is convergence checked in coords_xtoi ?
-  logical  :: trestarted_report
+  logical  :: trestarted_report,noeandg,fd_hess_running
+  logical  :: tswitch
 ! **********************************************************************
   
+  ! classical rate (i.e. rate w/o tunneling) should be calculated
+  if(glob%iopt == 13) then
+    call dlf_htst_rate()
+    return ! nothing else to do
+  end if
+
   iimage=1
   glob%toldenergy_conv=.false.
 
@@ -339,6 +366,14 @@ subroutine dlf_run( &
   if(glob%iopt==11) then
     glob%massweight=.true.
     glob%icoord=0
+    glob%distort=0.D0
+  end if
+
+  ! if qTST thermal analysis (hessian only) is called, make sure that mass-weighted
+  ! cartesians are used!
+  if(glob%iopt==12) then
+    glob%massweight=.true.
+    glob%icoord=190
     glob%distort=0.D0
   end if
 
@@ -356,6 +391,13 @@ subroutine dlf_run( &
   glob%taccepted=.true.
   tconv=.false.
   trerun_energy=.false.
+  glob%dotask=.true.
+  status=0
+
+  ! define, if Energy and gradient calculations are to be performed
+  noeandg=.false.
+  if(glob%inithessian==5) noeandg=.true.
+  if(glob%iopt==13) noeandg=.true.
 
   ! read checkpoint file 
   if(glob%restart==1) then
@@ -364,9 +406,19 @@ subroutine dlf_run( &
     call clock_stop("CHECKPOINT")
     if(.not.trestarted) call dlf_fail("Restart attempt failed")
     trestarted_report=.true.
+    ! Parallel NEB - assume that image restart info for external
+    ! program is also available
+    glob%serial_cycle = 0 
   else
     trestarted=.false.
     trestarted_report=.false.
+    ! Parallel NEB - each workgroup should calculate all images
+    ! on the first cycle, so that each image calc restarts from the
+    ! result of the last (as would normally happen in serial)
+    ! For some external programs it may not be important to do this, 
+    ! so this could be made user-defined.
+    glob%serial_cycle = 1
+    if (glob%icoord==190) glob%serial_cycle = 0
   end if
 
   ! report at the start
@@ -379,14 +431,39 @@ subroutine dlf_run( &
     if(printf>=3) then
       if(stat%sene>0) THEN
         if (glob%iam == 0) then
-           open(unit=30,file="path.xyz",position="APPEND")
-           open(unit=31,file="path_active.xyz",position="APPEND")
+          open(unit=30,file="path.xyz",position="APPEND")
+          open(unit=31,file="path_active.xyz",position="APPEND")
+          ! Only open for TS search methods
+          if (glob%iopt == 10 .or. (glob%icoord >= 100 .and. glob%icoord < 300)) then
+             open(unit=32,file="path_tsmode.xyz",position="APPEND")
+          end if
+          ! Only for microiterative optimisations
+          if (glob%imicroiter > 0) then
+             open(unit=33,file="path_micro.xyz",position="APPEND")
+          end if
         end if
       ELSE
         if (glob%iam == 0) then
-           open(unit=30,file="path.xyz")
-           open(unit=31,file="path_active.xyz")
+          open(unit=30,file="path.xyz")
+          open(unit=31,file="path_active.xyz")
+          ! Only open for TS search methods
+          if (glob%iopt == 10 .or. (glob%icoord >= 100 .and. glob%icoord < 300)) then
+             open(unit=32,file="path_tsmode.xyz")
+          end if
+          ! Only for microiterative optimisations
+          if (glob%imicroiter > 0) then
+             open(unit=33,file="path_micro.xyz")
+          end if
         end if
+      end if
+    end if
+    if(printf>=4.and.glob%iam == 0) then
+      if(stat%sene>0) THEN
+        open(unit=300,file="path_force.xyz",position="APPEND")
+        !open(unit=301,file="paths.xyz",position="APPEND")
+      ELSE
+        open(unit=300,file="path_force.xyz")
+        !open(unit=301,file="paths.xyz")
       end if
     end if
     call clock_stop("XYZ")
@@ -411,9 +488,27 @@ subroutine dlf_run( &
        exit ! the MAIN OPTIMISATION CYCLE
     end if
 
-    if(trestarted) goto 1000
+    if(trestarted) then
+       ! Task-farming: (at present) only workgroup 0 saves a checkpoint 
+       ! file, and only partial checkpoint information is known to wg0
+       ! until the end of the energy loop. Therefore
+       ! restarts can only happen after the whole array is calculated.
+       ! (see Q in dlf_checkpoint_write)
+       if (glob%ntasks > 1) goto 1010
+       ! Serial runs can potentially restart after 
+       ! any energy evaluation
+       goto 1000
+       ! NB: serial and parallel checkpoint files are not compatible
+    end if
 
-    if(.not.trerun_energy) stat%ccycle= stat%ccycle+1
+    if(.not.trerun_energy) then
+       if (glob%imicroiter < 2) then
+          stat%ccycle = stat%ccycle+1
+       else 
+          stat%miccycle = stat%miccycle + 1
+          stat%tmiccycle = stat%tmiccycle + 1
+       end if
+    end if
     stat%sene=stat%sene+1
     if(stat%ccycle > glob%maxcycle) then
       stat%ccycle= stat%ccycle-1
@@ -436,75 +531,158 @@ subroutine dlf_run( &
       exit
     end if
 
-    if(printl>=6) write(stdout,"('Calculating the energy',i5)") stat%sene
+    ! Parallel NEB: determine whether this workgroup should calculate a gradient
+    !if (glob%icoord/100 == 1 .and. glob%ntasks > 1 .and. glob%iopt/=12 ) then
+    call dlf_qts_get_int("TASKFARM_MODE",taskfarm_mode)
+    call dlf_formstep_get_logical("FD_HESS_RUNNING",fd_hess_running)
+    if (glob%icoord/100 == 1 .and. glob%ntasks > 1 .and. &
+        (.not.fd_hess_running .or. taskfarm_mode==2)) then
+       !taskfarm_mode: 1 for parallelization of QTS-FD-Hessians within each image
+       !taskfarm_mode: 2 for parallelization of the images in QTS-Hessian calculations
+       ! Parallel NEB
+      call dlf_qts_get_int("IMAGE_STATUS",image_status)
+      if(glob%icoord==190.and.taskfarm_mode==2) iimage=image_status
+       glob%dotask = (mod(iimage-1,glob%ntasks) == glob%mytask)
+       !  Serial first cycle
+       if (glob%serial_cycle == 1) glob%dotask = .true.
+    end if
+    ! Note for parallel FD Hessian, dotask is set in dlf_fdhessian
+    ! Other methods: always calculate gradient
 
-    call clock_start("EANDG")
+    if (glob%dotask) then
 
-    if (glob%imultistate == 0) then
-       ! An ordinary single state gradient
-       !write(*,*) 'GJB DLF: getting the energy & gradient'
-       !write(*,*) 'GJB Before the call: xcoords(1,1) = ', glob%xcoords(1,1)
-       call dlf_get_gradient(glob%nvar,glob%xcoords,glob%energy, &
-            glob%xgradient,iimage,&
+       if(printl>=6) write(stdout,"('Calculating the energy',i5)") stat%sene
+       stat%pene = stat%pene + 1
+       call clock_start("EANDG")
+
+       if (glob%imultistate == 0) then
+         ! An ordinary single state gradient
+
+         ! don't do any optimizations or energy evaluations in case only
+         ! the rate has to be calculated from an existing qts hessian
+         if(.not.noeandg) then
+
+            ! ESP fit setting
+            kiter = -1
+            if (glob%micro_esp_fit) then
+               ! TODO - at certain times kiter should still be -1, e.g.
+               ! during initial Hessian calc in P-RFO
+               if (glob%imicroiter == 1) kiter = 0
+               if (glob%imicroiter == 2) kiter = 1
+            end if
+
+            call dlf_get_gradient(glob%nvar,glob%xcoords,glob%energy, &
+                 glob%xgradient,iimage,kiter,&
 #ifdef GAMESS
-            core,&
+                 core,&
 #endif
-            status)
-       !write(*,*) 'GJB xcoords(1,1) after get_gradient= ', glob%xcoords(1,1)
-       !write(*,*) 'GJB gradient = ',glob%xgradient
-    else
-       ! Multiple state gradient calculation
-       if (printl >= 6) write(stdout, '(a)') "Calculating multistate energies"
-       call dlf_get_multistate_gradients(glob%nvar,glob%xcoords,glob%msenergy, &
-            glob%msgradient,glob%mscoupling,glob%needcoupling,iimage,status)
-       ! Form the objective function and gradient from the individual
-       ! state gradients
-       if (printl >= 4) then
-          write(stdout, '(a, f20.10)') "Lower state energy: ", glob%msenergy(1)
-          write(stdout, '(a, f20.10)') "Upper state energy: ", glob%msenergy(2)
-          write(stdout, '(a, f20.10)') "Energy difference:  ", &
-               abs(glob%msenergy(1) - glob%msenergy(2))
+                 status)
+
+            ! ESP fit corrections
+            if (glob%micro_esp_fit .and. status == 0) then
+               if (glob%imicroiter == 1) then
+                  ! Macro step - calculate corrections to energy/gradient
+                  ! Get ESP eandg
+                  glob%macrocoords(:,:,iimage) = glob%xcoords
+                  kiter = 1
+                  call dlf_get_gradient(glob%nvar,glob%xcoords,glob%e0corr(iimage), &
+                       glob%g0corr(:,:,iimage),iimage,kiter,&
+#ifdef GAMESS
+                       core,&
+#endif
+                       status)
+                  ! e0corr = E0(full) - E0(esp fit)
+                  glob%e0corr(iimage) = glob%energy - glob%e0corr(iimage)
+                  ! g0corr = G0(full) - G0(esp fit)
+                  ! Eq 5 in HDLCOpt paper
+                  ! External program should ensure that g0corr for inner regions = 0
+                  glob%g0corr(:,:,iimage) = glob%xgradient - glob%g0corr(:,:,iimage)
+               else if (glob%imicroiter == 2) then
+                  ! Micro step - apply corrections
+                  ! Eq 6 in HDLCOpt paper
+                  svar = glob%e0corr(iimage) + &
+                       sum( glob%g0corr(:,:,iimage) &
+                       * (glob%xcoords - glob%macrocoords(:,:,iimage)) )
+                  glob%energy = glob%energy + svar
+                  if (printl >= 4) write(stdout,'(a, 22x, f20.6)') &
+                       "Microiterative energy correction: ", svar
+                  ! Eq 4 in HDLCOpt paper
+                  glob%xgradient = glob%xgradient + glob%g0corr(:,:,iimage)
+               else
+                  call dlf_fail("ESP fit only appropriate for microiterative opts")
+               end if
+            end if
+
+         end if
+       else
+          ! Multiple state gradient calculation
+          if (printl >= 6) write(stdout, '(a)') "Calculating multistate energies"
+          call dlf_get_multistate_gradients(glob%nvar,glob%xcoords,glob%msenergy, &
+               glob%msgradient,glob%mscoupling,glob%needcoupling,iimage,status)
+          ! Make sure coupling is zero if it is required by algorithm but 
+          ! coupled_states was false
+          if (glob%needcoupling == 0) glob%mscoupling = 0.0d0
+          ! Form the objective function and gradient from the individual
+          ! state gradients
+          if (printl >= 4) then
+             write(stdout, '(a, f20.10)') "Lower state energy: ", glob%msenergy(1)
+             write(stdout, '(a, f20.10)') "Upper state energy: ", glob%msenergy(2)
+             write(stdout, '(a, f20.10)') "Energy difference:  ", &
+                  abs(glob%msenergy(1) - glob%msenergy(2))
+          endif
+          if (printl >= 6) write(stdout, '(a)') "Forming objective function"
+          call dlf_make_conint_gradient
        endif
-       if (printl >= 6) write(stdout, '(a)') "Forming objective function"
-       call dlf_make_conint_gradient
-    endif
 
-    !write(*,*) 'Just got HMBI energy and gradient'
-    !write(*,*) 'energy = ',glob%energy
+       call clock_stop("EANDG")
 
-    call clock_stop("EANDG")
+       ! check of NaN in the energy (comparison of NaN with any number 
+       ! returns .false. , pgf90 does not understand isnan() )
+       if( abs(glob%energy) > huge(1.D0) ) then
+          status=1
+       else
+          if (.not. abs(glob%energy) < huge(1.D0) ) status=1
+       end if
 
-    ! check of NaN in the energy (comparison of NaN with any number 
-    ! returns .false. , pgf90 does not understand isnan() )
-    if( abs(glob%energy) > huge(1.D0) ) then
-      status=1
-    else
-      if (.not. abs(glob%energy) < huge(1.D0) ) status=1
-    end if
-
-    if(status/=0) then
-      call dlf_report(trestarted_report)
-      call dlf_fail("Energy evaluation failed")
-    end if
-
-    if(iimage==1) then
-      if(printl>=2) write(stdout,'(1x,a,es16.9)') &
-          "Energy calculation finished, energy: ", &
-          glob%energy
-    else
-      if(printl>=2) write(stdout,'(1x,a,i4,a,es16.9)') &
-          "Energy calculation of image ",iimage,&
-          " finished, energy: ",glob%energy
+       ! Parallel runs must share status
+       ! so that all workgroups are given notice of failure
+       ! (status should be shared before attempting to share other data)
+       if (status/=0) then
+          if (glob%ntasks > 1) then
+             call dlf_tasks_int_sum(status, 1)
+          else
+             call dlf_report(trestarted_report)
+          end if
+          call dlf_fail("Energy evaluation failed")
+       end if
+ 
+       if(iimage==1) then
+          if(printl>=2) write(stdout,'(1x,a,es16.9)') &
+               "Energy calculation finished, energy: ", &
+               glob%energy
+       else
+          if(printl>=2) write(stdout,'(1x,a,i4,a,es16.9)') &
+               "Energy calculation of image ",iimage,&
+               " finished, energy: ",glob%energy
+       end if
+       
+    else ! .not. glob%dotask
+       ! Multistate calculations should not reach this point
+       if (glob%imultistate /= 0) then
+          call dlf_fail("Multistate logic error")
+       end if
+       glob%energy = 0.d0
+       glob%xgradient = 0.d0
+       status = 0       
     end if
 
     ! send coordinates to the calling program
     if(printf>=1) then
-      !write(*,*) 'GJB xcoords(1) = ', glob%xcoords
       call dlf_put_coords(glob%nvar,1,glob%energy,glob%xcoords,glob%iam)
     end if
 
-    ! write restart information
-    if(stat%sene<=glob%maxdump) then
+    ! write restart information (serial runs)
+    if(stat%sene<=glob%maxdump .and. glob%ntasks == 1) then
       if(glob%dump>0) then
         if(mod(stat%sene,glob%dump)==0) then
           call clock_start("CHECKPOINT")
@@ -514,16 +692,29 @@ subroutine dlf_run( &
         end if
       end if
     end if
-    ! come here if checkpoint file successfully read
+    ! come here if (serial) checkpoint file successfully read
 1000 trestarted=.false.
 
     ! ==================================================================
     ! TRANSFORM CARTESIANS TO INTERNALS (COORDS AND GRAD)
     ! ==================================================================
+
+
     call clock_start("COORDS")
-    call dlf_coords_xtoi(trerun_energy,testconv,iimage)
+    call dlf_coords_xtoi(trerun_energy,testconv,iimage,status)
+
+    ! Microiterative opt - set up mic arrays (after macro step as well)
+    if (glob%imicroiter > 0) then
+       call dlf_microiter_itomic
+    end if
+
     call clock_stop("COORDS")
- 
+
+    ! copied here to allow for qTS Hessian calculations.
+    ! ==================================================================
+    if(trerun_energy) cycle ! main optimisation cycle
+    ! ==================================================================
+
     ! ==================================================================
     ! Multistate gradient: post-transformation
     ! ==================================================================
@@ -539,20 +730,42 @@ subroutine dlf_run( &
     ! glob%ihessian is allocated and deallocated in formstep_init and
     !  formstep_destroy
     if(needhessian) then
-      ! Make sure the Hessian exists. This can imply energy cycles (trerun_energy)
-      ! or a call to dlf_get_hessian
-      call dlf_makehessian(trerun_energy,tconv &
+      if(glob%iopt/=12.and.glob%iopt/=9) then
+        tconv = .false.
+        ! Make sure the Hessian exists. This can imply energy cycles (trerun_energy)
+        ! or a call to dlf_get_hessian
+        call dlf_makehessian(trerun_energy,tconv &
 #ifdef GAMESS
           ,core&
 #endif
-          )
-      if (tconv) exit
+            )
+        if (tconv) exit
+      else
+!if glob%iop=12
+!        call dlf_qts_makehessian(trerun_energy)
+      end if
     end if
 
-    ! this may be parallelised in the future ...
     ! ==================================================================
     if(trerun_energy) cycle ! main optimisation cycle
     ! ==================================================================
+
+    ! Parallel NEB: revert to parallel
+    glob%serial_cycle = 0
+
+    ! Restart information for task-farmed jobs
+    if(stat%ccycle <= glob%maxdump .and. glob%ntasks > 1) then
+      if(glob%dump>0) then
+        if(mod(stat%ccycle,glob%dump)==0) then
+          call clock_start("CHECKPOINT")
+          if(printl>=6) write(stdout,"('Writing restart information')")
+          call dlf_checkpoint_write(status)
+          call clock_stop("CHECKPOINT")
+        end if
+      end if
+    end if    
+    ! come here if task-farmed checkpoint file read
+1010 trestarted=.false.
 
     ! exit if only the hessian and thermal analysis should be calculated
     if(glob%iopt == 11) then
@@ -560,38 +773,121 @@ subroutine dlf_run( &
       exit ! no optimisation cycles
     end if
 
+    ! exit if only the instanton rate should be calculated
+    if(glob%iopt == 12) then
+      call dlf_qts_rate()
+      exit ! no optimisation cycles
+    end if
+
+    ! exit if test_delta is running
+    if(glob%iopt == 9) then
+      exit ! no optimisation cycles
+    end if
+    
+
     ! write trajectory
     if(printf>=3 .and. glob%iam == 0) then
-      call write_xyz(30,glob%nat,glob%znuc,glob%xcoords)
-      call write_xyz_active(31,glob%nat,glob%znuc,glob%spec,glob%xcoords)
+      if (glob%imicroiter < 2) then
+         ! Write out standard optimisation cycles
+         ! and macroiterative steps
+         call write_xyz(30,glob%nat,glob%znuc,glob%xcoords)
+         call write_xyz_active(31,glob%nat,glob%znuc,glob%spec,glob%xcoords)
+      end if
+      if (glob%imicroiter > 0) then
+         ! Full microiterative opt path including microiterative steps
+         call write_xyz(33,glob%nat,glob%znuc,glob%xcoords)
+      endif
+    end if
+
+    ! write forcetrajectory
+    if(printf>=4.and.glob%iam == 0) then
+      if (glob%imicroiter < 2) then
+         call write_xyz(300,glob%nat,glob%znuc,-glob%xgradient)
+      end if
     end if
 
     ! if trust-radius, test for step acceptance. 
     ! If rejected, do not form a new step and keep old energy.
-    if (glob%iline==1) then
-      call test_acceptance
+    if (glob%imicroiter == 2) then
+       call dlf_microiter_test_acceptance(tswitch)
+       if (tswitch) then
+          ! Reached minimum trust radius, switch to macro
+          glob%imicroiter = 1
+          call dlf_lbfgs_deselect
+          ! Cycle to perform a new full eandg calculation
+          ! TODO refactor to reach normal itox below
+          call dlf_coords_itox(iimage)
+          cycle
+       end if
+    else
+       if (glob%iline==1) then
+          call test_acceptance
+       end if
+       if (glob%iline==2) then
+          call test_acceptance_g
+       end if
+       if (glob%iline==3) then
+          call linesearch
+       end if
     end if
-    if (glob%iline==2) then
-      call test_acceptance_g
-    end if
-    if (glob%iline==3) then
-      call linesearch
-    end if
+
+  !  if(glob%icoord==190) then
+  !    ! set convergence test to cartesian coordinates and gradients
+  !    call dlf_qts_convergence
+  !  end if
 
     ! ==================================================================
     ! TEST FOR CONVERGENCE
     ! ==================================================================
     if(glob%taccepted) then
-      stat%caccepted=stat%caccepted+1
+       if (glob%imicroiter < 2) then
+          stat%caccepted=stat%caccepted+1
+       else 
+          stat%tmicaccepted = stat%tmicaccepted + 1
+       end if
       tconv=.false.
-      if(.not.testconv) call convergence_test(stat%ccycle,.true.,tconv)
-      if(tconv) exit
+      if(.not.testconv) then
+         if (glob%imicroiter < 2) then
+            ! Standard convergence test
+            call convergence_test(stat%ccycle,.true.,tconv)
+            if (tconv) exit
+         else
+            ! Test convergence of microiterations
+            call dlf_microiter_convergence(tconv)
+            if (tconv) then
+               if (printl>=2) then
+                  write(stdout,"('Microiterations converged')")
+                  write(stdout,"('Switching to macroiterations.')")
+               end if
+               glob%imicroiter = 1
+               call dlf_lbfgs_deselect
+               ! Cycle to perform a new full eandg calculation
+               ! TODO refactor to reach normal itox below
+               call dlf_coords_itox(iimage)
+               cycle
+            end if
+         end if
+      end if
+    end if
+    
+    ! Exit microiterations if maxmicrocycle reached
+    if (glob%imicroiter == 2 .and. stat%miccycle == glob%maxmicrocycle) then
+       if(printl>0) then
+          write(stdout,"('Maximum number of microiterative cycles reached')")
+          write(stdout,"('Switching to macroiterations.')")
+       end if
+       glob%imicroiter = 1
+       call dlf_lbfgs_deselect
+       ! Cycle to perform a new full eandg calculation
+       ! TODO refactor to reach normal itox below
+       call dlf_coords_itox(iimage)
+       cycle
     end if
 
     ! ==================================================================
     ! FORM AN OPTIMISATION STEP
     ! ==================================================================
-    if(glob%taccepted) then
+    if(glob%taccepted .and. glob%imicroiter < 2) then
       call clock_start("FORMSTEP")
       call dlf_formstep
       call clock_stop("FORMSTEP")
@@ -601,7 +897,7 @@ subroutine dlf_run( &
     ! DO A LINE SEARCH OR A TRUST RADIUS STEP
     ! ==================================================================
 
-    if(glob%taccepted) then
+    if(glob%taccepted .and. glob%imicroiter < 2) then
       
       ! scale the step 
       call dlf_scalestep
@@ -615,6 +911,9 @@ subroutine dlf_run( &
       ! Check step in case of dimer
       if(glob%icoord/100==2) call dlf_dimer_checkstep
       
+      ! For macroiterations only move the inner region
+      if (glob%imicroiter == 1) call dlf_microiter_check_macrostep
+
       call clock_stop("COORDS")
 
       ! do the step
@@ -622,11 +921,46 @@ subroutine dlf_run( &
 
     end if
 
-    if(glob%taccepted) then
-      ! store old values
-      glob%oldenergy=glob%energy
-      glob%toldenergy=.true.
+    ! write steptrajectory
+  !  if(printf>=4) then
+  !    ! these are icoords - it will only work for cartesians without frozen atoms
+       ! therefore commented out
+  !    call write_xyz(301,glob%nivar/3,glob%znuc(1:glob%nivar/3),glob%step)
+  !  end if
+
+    if(glob%taccepted .and. glob%imicroiter < 2) then
+       ! store old values
+       glob%oldenergy=glob%energy
+       glob%toldenergy=.true.
     end if
+
+    ! ==================================================================
+    ! MICROITERATIVE STEP
+    ! ==================================================================
+
+    ! Microiterative step
+    if (glob%imicroiter == 2 .and. glob%taccepted) then
+
+       ! Form the microiterative step
+       call clock_start("FORMSTEP")
+       call dlf_microiter_formstep
+       call clock_stop("FORMSTEP")
+
+       ! Scale the microiterative step
+       call dlf_microiter_scalestep
+
+       ! Set microiterative step of frozen NEB images to zero
+       if(glob%icoord/100==1) call dlf_neb_checkstep
+
+       ! Do the step and store old microiterative energy
+       call dlf_microiter_step
+
+    end if
+
+    ! Switch from macro to microiterations if necessary
+    ! Do not take a micro step yet - need to get a reference energy
+    ! to test acceptance of first micro step.
+    if (glob%imicroiter == 1 .and. glob%taccepted) call dlf_microiter_enter
 
     ! ==================================================================
     ! TRANSFORM INTERNAL COORDINATES TO CARTESIANS (COORDS ONLY)
@@ -639,18 +973,53 @@ subroutine dlf_run( &
   end do ! main simulation cycle
 
   ! Job finished, prepare for shutdown
-  if(glob%iopt /= 11) then
+  if (glob%iopt /= 11 .and. glob%iopt /= 12 .and. glob%iopt /= 9 ) then
     if(tconv) then
-      if(printl>=2)write(stdout,'(1x,a)') "converged"
+      if (printl > 0) then
+         write(stdout,'(/,1x,a)') "Optimisation converged"
+         write(stdout,'(1x,a)')   "----------------------"
+         if (glob%imultistate == 0) then
+            call convergence_get("VALE", svar)
+            write(stdout,'(1x,a,f20.12,/)') "Final converged energy: ", svar
+         else
+            write(stdout,'(1x,a,f20.12)') &
+                 "Final lower state energy: ", glob%msenergy(1)
+            write(stdout,'(1x,a,f20.12)') &
+                 "Final upper state energy: ", glob%msenergy(2)
+            write(stdout,'(1x,a,f20.12,/)') "Final energy difference:  ", &
+                 abs(glob%msenergy(1) - glob%msenergy(2))
+         end if
+      end if
     else
-      if(printl>=2)write(stdout,'(1x,a)') "NOT CONVERGED"
+      if (printl > 0) then
+         write(stdout,'(/,1x,a)') "WARNING: OPTIMISATION HAS NOT CONVERGED"
+         write(stdout,'(1x,a,/)') "---------------------------------------"
+      end if
     end if
+  end if
+
+  ! calculate the qts rate if converged
+  if(glob%icoord==190.and.tconv.and.glob%iopt/=12.and.glob%havehessian) then
+    if(printl>=2) then
+      write(stdout,'(a)') "Calculating the Rate. WARNING: the rate information below was obtained"
+      write(stdout,'(a)') " from updated Hessians. It is less accurate than a full rate calculation"
+    end if
+    call dlf_qts_rate()
   end if
 
   ! close trajectory files
   if(printf>=3 .and. glob%iam == 0) then
     close(30)
     close(31)
+    if (glob%iopt == 10 .or. (glob%icoord >= 100 .and. glob%icoord < 300)) then
+       close(32)
+    end if
+    if (glob%imicroiter > 0) close(33)
+  end if
+  ! close force trajectory files
+  if(printf>=4.and.glob%iam == 0) then
+    close(300)
+    !close(301)
   end if
   ! again some rubbish for printing ...
   if(glob%icoord/100==1.and..not.glob%tatoms) then
@@ -676,9 +1045,7 @@ subroutine dlf_run( &
   ! ====================================================================
 
   ! delete memory for line search 
-  if (glob%iline==1.or.glob%iline==2.or.glob%iline==3) then
-    call linesearch_destroy
-  end if
+  call linesearch_destroy
 
   ! delete memory for search algorithm
   call dlf_formstep_destroy
@@ -707,6 +1074,7 @@ subroutine dlf_allocate_glob(nvarin,nvarin2,nvarspec, &
   use dlf_parameter_module, only: rk,ik
   use dlf_global, only: glob,stdout,printl
   use dlf_allocate, only: allocate
+  use dlf_constants, only: dlf_constants_get
   implicit none
   integer, intent(in) :: nvarin
   integer, intent(in) :: nvarin2
@@ -720,6 +1088,7 @@ subroutine dlf_allocate_glob(nvarin,nvarin2,nvarspec, &
   integer, intent(in) :: nweight
   integer, intent(in) :: n_po_scaling
   integer :: nat,ivar
+  real(rk):: svar
 ! **********************************************************************
   if(glob%tinit) return ! this instance has been initialised
   glob%tcoords2=(nframe>0)
@@ -771,15 +1140,54 @@ subroutine dlf_allocate_glob(nvarin,nvarin2,nvarspec, &
       glob%iconn(:,:)=0
     end if
 
+    ! microiterative specification
+    call allocate(glob%micspec, nat)
+    if (glob%imicroiter > 0) then
+       ivar = nat + nz + 5*glob%ncons + 2*glob%nconn
+       glob%micspec(:) = spec(ivar+1:ivar+nat)
+       do ivar = 1, nat
+          if (glob%micspec(ivar) < 0 .or. glob%micspec(ivar) > 1) then
+             write(stdout,'(a,2i5)') 'Atom, Micspec: ', ivar, glob%micspec(ivar)
+             call dlf_fail("Incorrect microiterative specification")
+          end if
+       end do
+    else
+       ! override inner atoms list for non-microiterative opt
+       ! (logically, all atoms are in the core)
+       glob%micspec(:) = 1
+    end if
+    ! ESP fit
+    call allocate(glob%macrocoords,3,nat,glob%nimage)
+    call allocate(glob%g0corr,3,nat,glob%nimage)
+    call allocate(glob%e0corr,glob%nimage)
+    glob%macrocoords = 0.0d0
+    glob%g0corr = 0.0d0
+    glob%e0corr = 0.0d0
+
     call allocate( glob%weight,nat)
     if(nweight>0) then
       glob%weight=tmpcoords2(nat*3*nframe+1:nat*3*nframe+nat)
     else
       glob%weight(:)=1.D0
     end if
+    ! Set weight to zero for outer microiterative region 
+    ! so it takes no part in dimer rotation, NEB spring force etc.
+    do ivar = 1, nat
+       if (glob%micspec(ivar) == 0) glob%weight(ivar) = 0.0d0
+    end do
+
     call allocate( glob%mass,nat)
     if(nmass>0) then
       glob%mass=tmpcoords2(nat*3*nframe+nweight+1:nat*3*nframe+nweight+nat)
+      ! use atomic mass unit (mass of the electron) only in case of quantum TS search
+      if((glob%icoord==190.or.glob%icoord==390).and.&
+          glob%iopt/=11.and.glob%iopt/=13) then
+        glob%massweight=.true.
+        
+        call dlf_constants_get("AMU",svar)
+        glob%mass=glob%mass*svar !*(1.66054D-27/9.10939D-31)
+        
+      end if
     else
       glob%mass(:)=1.D0
     end if
@@ -801,7 +1209,10 @@ subroutine dlf_allocate_glob(nvarin,nvarin2,nvarspec, &
     if (glob%imultistate > 0) then
        call allocate(glob%msenergy, 2)
        call allocate(glob%msgradient, 3, nat, 2)
-       if (glob%needcoupling == 1) then
+       if (glob%imultistate > 1) then
+          ! Set up coupling array for GP/LN regardless of whether
+          ! it needs to be calculated. Will be set to zero if
+          ! needcoupling is false.
           call allocate(glob%mscoupling, 3, nat)
        else
           ! dummy array just to avoid problems in argument list
@@ -868,6 +1279,7 @@ subroutine dlf_deallocate_glob
   call deallocate( glob%icons )
   call deallocate( glob%znuc  )
   call deallocate( glob%iconn )
+  call deallocate(glob%micspec)
 
   call deallocate( glob%mass )
   call deallocate( glob%weight )
@@ -884,6 +1296,10 @@ subroutine dlf_deallocate_glob
   ! parallel optimisation algorithms
   if (glob%iopt/10==5) call deallocate(glob%po_radius_scaling)
 
+  call deallocate(glob%macrocoords)
+  call deallocate(glob%g0corr)
+  call deallocate(glob%e0corr)
+
 end subroutine dlf_deallocate_glob
 !!****
 
@@ -898,7 +1314,8 @@ end subroutine dlf_deallocate_glob
 !! SYNOPSIS
 subroutine dlf_fail(msg)
 !! SOURCE
-  use dlf_global, only: stdout, stderr
+  use dlf_global, only: glob, stdout, stderr
+  use dlf_store, only: store_delete_all
   implicit none
   character(*),intent(in) :: msg
   call flush(stdout)
@@ -907,6 +1324,28 @@ subroutine dlf_fail(msg)
   write(stdout,"(/,a,/,a,/)") "DL-FIND ERROR:",msg
   call flush(stdout)
   call flush(stderr)
+  ! Clean up allocatable arrays.
+  ! Otherwise they will stay allocated and DL-FIND
+  ! cannot be called again by the external code.
+  ! glob%cleanup prevents an infinite loop if one of the 
+  ! destroy functions calls dlf_fail...
+  glob%cleanup = glob%cleanup + 1
+  if (glob%cleanup <= 1) then
+     call linesearch_destroy
+     call dlf_formstep_destroy
+     call dlf_coords_destroy
+     call dlf_deallocate_glob
+     call dlf_formstep_set_tsmode(1,-2,1.0d0)
+     call store_delete_all
+  else
+     call flush(stdout)
+     call flush(stderr)
+       write(stderr,"(/,a,/)") "dlf_fail: clean up failed"
+       write(stdout,"(/,a,/)") "dlf_fail: clean up failed"
+     call flush(stdout)
+     call flush(stderr)
+  end if
+  ! Exit
   call dlf_error()
   ! this should not be reached, as dlf_error should not return
   stop
@@ -990,6 +1429,11 @@ subroutine dlf_report(trestarted)
     write(stdout,2000) "Number of steps in L-BFGS memory", &
          glob%lbfgs_mem
   end if
+  if(glob%iopt==9) then 
+    write(stdout,'(a)') &
+      "Optimisation algorithm: no optimization. Test different deltas"
+    write(stdout,'(a)') "    for the finite-difference calculation of Hessians."
+  end if
   if (glob%iopt==51) write(stdout,'(a)') &
       "Optimisation algorithm: Stochastic search"
   if (glob%iopt==52) write(stdout,'(a)') &
@@ -1001,6 +1445,22 @@ subroutine dlf_report(trestarted)
     write(stdout,'(a)') &
         "Optimisation algorithm: no optimisation, just calculate the"
     write(stdout,'(a)') "    Hessian and thermal corrections"
+    if (glob%inithessian == 5) write(stdout,'(a)') &
+        "Initial Hessian read from file"
+    write(stdout,2000) "Modes assumed to have zero vibrational frequency",glob%nzero
+    write(stdout,1000) "Temperature",glob%temperature,"K"
+  end if
+  if(glob%iopt==12) then 
+    write(stdout,'(a)') &
+        "Optimisation algorithm: no optimisation, just calculate the"
+    write(stdout,'(a)') "    instanton reaction rate"
+    write(stdout,2000) "Number of modes assumed to have zero vibrational frequency",glob%nzero
+    if (glob%inithessian == 5) write(stdout,'(a)') &
+        "Initial Hessian read from file"
+  end if
+  if(glob%iopt==13) then 
+    write(stdout,'(a)') &
+        "Calculation of the reaction rate (no tunnelling)"
   end if
   if(glob%iopt==20) write(stdout,'(a)') &
       "Optimisation algorithm: Newton-Raphson"
@@ -1021,6 +1481,8 @@ subroutine dlf_report(trestarted)
          "Initial Hessian by diagonal one-point finite difference"
     if (glob%inithessian == 4) write(stdout,'(a)') &
          "Initial Hessian is identity matrix"
+     if (glob%inithessian == 5) write(stdout,'(a)') &
+         "Initial Hessian read from file"
     if(glob%update==0) write(stdout,'(a)') &
       "No Hessian updates"
     if(glob%update==1) write(stdout,'(a)') &
@@ -1029,8 +1491,9 @@ subroutine dlf_report(trestarted)
       "Hessian update mechanism: Bofill"
     if(glob%update==3) write(stdout,'(a)') &
       "Hessian update mechanism: BFGS"
-    write(stdout,2000) "Maximum Number of Hessian updates before recalc.", &
-         glob%maxupd
+    if(glob%icoord/=190) &
+        write(stdout,2000) "Maximum Number of Hessian updates before recalc.", &
+        glob%maxupd
     write(stdout,1000) "Finite difference for Hessian calculation", &
          glob%delta
     if(glob%soft>0.D0) then
@@ -1043,7 +1506,7 @@ subroutine dlf_report(trestarted)
          glob%minstep
      
   end if
-  if(glob%iopt==11) then
+  if(glob%iopt==11 .or. glob%iopt==12) then
     write(stdout,1000) "Finite difference for Hessian calculation", &
          glob%delta
   end if
@@ -1153,10 +1616,49 @@ subroutine dlf_report(trestarted)
         "Nudged elastic band with start and endpoint minimised perpendicular to path"
   if(glob%icoord/10==12) write(stdout,'(a)') &
         "Nudged elastic band with frozen start and endpoint"
-  if(glob%icoord>=100.and.glob%icoord<200) then
+  if(glob%icoord>=100.and.glob%icoord<190) then
     write(stdout,2000) "Number of images",glob%nimage
     write(stdout,1000) "NEB spring constant",glob%nebk
+    ! == 0.D0 for reals is dangerous. Maybe replace by <= 0.D0 or something?
+    if (glob%neb_climb_test == 0.0d0) then
+      write(stdout,'(a)') "No climbing image"
+    else 
+      write(stdout,1000) "Tolerance factor to spawn climbing image",glob%neb_climb_test
+    endif
+    if (glob%neb_freeze_test == 0.0d0) then
+      write(stdout,'(a)') "No freezing of images during optimisation"
+    else
+      write(stdout,1000) "Tolerance factor to freeze images", glob%neb_freeze_test
+    endif
   end if
+  ! qTS search
+  if(glob%icoord==190) then
+    write(stdout,'(a)') &
+        "Instanton (Quantum transition state) search"
+    write(stdout,2000) "Number of images",glob%nimage
+    write(stdout,1000) "Temperature",glob%temperature,"K"
+    write(stdout,1000) "Fraction of adapted tau",glob%nebk
+    if(glob%iopt==3) then
+      if(glob%tolrot>90.D0) then
+        write(stdout,'(a)') &
+            "Mode following, mode estimated from tangent of the path"
+      else
+        write(stdout,'(a)') &
+            "Dimer method, rotation by line search without extrapolation"
+        write(stdout,1000) "Dimer distance (mid- to endpoint)",glob%delta
+        ! glob%maxrot is not used in QTS dimer at the moment
+        !write(stdout,2000) "Maximum number of dimer rotations",glob%maxrot
+        write(stdout,1000) "Tolerance in rotation",glob%tolrot,"degrees"
+      end if
+    end if
+    if(glob%tcoords2.and.abs(glob%distort)>0.D0) then
+      write(stdout,'(a)') "Start configuration: distributing images along coords2"
+      write(stdout,1000) "Spread along coords2: ",glob%distort
+    end if
+    write(stdout,2000) "Number of modes assumed to have zero vibrational frequency",glob%nzero
+
+  end if
+
   ! Dimer method
   if(glob%icoord/100==2) then
     if(glob%icoord/10==20) write(stdout,'(a)') &
@@ -1173,6 +1675,17 @@ subroutine dlf_report(trestarted)
 
   end if
 
+  ! Chain Method
+  if(glob%icoord/100==3) then
+    write(stdout,'(a)') "Chain method with augmented-Lagrange optimizer"
+    write(stdout,1000) "Delta for finite-difference",glob%delta
+    write(stdout,2000) "Number of images",glob%nimage
+    write(stdout,1000) "Spring constant",glob%nebk
+!    write(stdout,2000) "Functional (may change)",chain%functional
+!    write(stdout,2000) "Lagrange parameters are updated every",&
+!        lambda_intervall,"steps"
+  end if
+
   write(stdout,*)
 
   ! ====================================================================
@@ -1184,7 +1697,7 @@ subroutine dlf_report(trestarted)
   if(glob%tcoords2) then
     ia3=shape(glob%xcoords2)
   else
-    ia3=(/1,1,1/)
+    ia3=(/1,1,0/)
   end if
   ! input geometries are coords and coords2
   write(stdout,2000) "Number of input geometries",ia3(3)+1
@@ -1194,6 +1707,9 @@ subroutine dlf_report(trestarted)
   end if
 
   write(stdout,2000) "Variables to be optimised",glob%nivar
+  if (glob%imicroiter /= 0) then
+     write(stdout, 2000) "Variables in inner (macroiterative) region",glob%nicore
+  end if
   if(glob%dump>0) then
     write(stdout,2000) "Restart information is written every", &
         glob%dump,"steps"
@@ -1207,12 +1723,23 @@ subroutine dlf_report(trestarted)
   end if
 
   if(stat%ccycle > 0) then
-    write(stdout,2000) "Number of energy evaluations on this processor",stat%sene
-    write(stdout,2000) "Number of steps",stat%ccycle
-    write(stdout,2000) "Number of accepted steps / line searches",stat%caccepted
+    write(stdout,2000) "Number of energy evaluations on this processor",stat%pene
+    if (glob%imicroiter == 0) then
+       write(stdout,2000) "Number of steps",stat%ccycle
+       write(stdout,2000) "Number of accepted steps / line searches",stat%caccepted
+    else
+       write(stdout,2000) "Number of macroiterative steps",stat%ccycle
+       write(stdout,2000) "Number of accepted macroiterative steps",stat%caccepted
+       write(stdout,2000) "Number of microiterative steps",stat%tmiccycle
+       write(stdout,2000) "Number of accepted microiterative steps", stat%tmicaccepted
+    end if
   else
     write(stdout,2000) "Maximum number of steps",glob%maxcycle
     write(stdout,2000) "Maximum number of energy evaluations",glob%maxene
+    if (glob%imicroiter > 0) then
+       write(stdout,2000) "Max no. of microiterative steps per macro step", &
+            glob%maxmicrocycle
+    end if
   end if
 
 111 continue ! skip to here if printl is less than or equal to zero
@@ -1247,29 +1774,47 @@ subroutine dlf_printheader
   call dlf_svnversion(svn_v)
   if(svn_v=="") then
     ! svn not available, use the revision number of this file
-    svn_v="$Revision: 1.1 $"
+    svn_v="$Revision: 538 $"
     svn_v= svn_v(11:)
   end if
 
-  write(stdout,'(a)') &
+  write(stdout,'(/a)') &
       "***********************************************************************"      
   write(stdout,'(a)') &
       "**                                                                   **"      
+  write(stdout,'(a)') &
+      "**                       ---------------------                       **"
   write(stdout,'(a)') &
       "**                              DL-FIND                              **"      
   write(stdout,'(a)') &
       "**                       Geometry Optimisation                       **"      
   write(stdout,'(a)') &
-      "**               written by Johannes Kaestner, in 2006               **"      
+      "**                       ---------------------                       **"
+  write(stdout,'(a)') &
+      "**                                                                   **"      
+  write(stdout,'(a)') &
+      "**                 J. Kaestner, J.M. Carr, T.W. Keal,                **"
+  write(stdout,'(a)') &
+      "**                W. Thiel, A. Wander and P. Sherwood                **"
+  write(stdout,'(a)') &
+      "**                                                                   **" 
+  write(stdout,'(a)') &
+      "**              J. Phys. Chem. A, 2009, 113 (43), 11856.             **"
+  write(stdout,'(a)') &
+      "**                                                                   **" 
+  write(stdout,'(a)') &
+      "**   Please include this reference in published work using DL-FIND.  **"
+  write(stdout,'(a)') &
+      "**                                                                   **" 
   write(stdout,'(a)') &
       "**               Copyright:  STFC Daresbury Laboratory               **"      
 !                    g  f  e  d  c  b  a  C  a  b  c  d  e  f  g
 !  write(stdout,'(a)') &
-!      "**                          $Revision: 1.1 $                         **"      
+!      "**                          $Revision: 538 $                         **"      
   write(stdout,'("**",27x,"Revision: ",a30,"**")') svn_v
   write(stdout,'(a)') &
       "**                                                                   **"      
-  write(stdout,'(a)') &
+  write(stdout,'(a/)') &
       "***********************************************************************"      
   call flush(stdout)
 end subroutine dlf_printheader
@@ -1321,6 +1866,8 @@ subroutine dlf_default_init(nspec,spec)
   glob%icoord=-1
   glob%nimage=-1
   glob%nebk=-1.D0
+  glob%neb_climb_test=-1.D0
+  glob%neb_freeze_test=-1.D0
   glob%maxrot=-1
   glob%tolrot=-1.D20
   spec(:)=0 ! for spec, the default is set here (as it may contain
@@ -1367,6 +1914,13 @@ subroutine dlf_default_init(nspec,spec)
   glob%po_nsave= -1
 
   glob%ntasks= -1 ! why???  no real need for this not to be 1...
+
+  glob%nzero=-1
+
+  glob%qtsflag=-1
+
+  glob%maxmicrocycle = -1
+  glob%micro_esp_fit = .false.
 
 end subroutine dlf_default_init
 !!****
@@ -1418,7 +1972,12 @@ subroutine dlf_default_set(nvarin)
   end if
   if(glob%update<0) glob%update=2
   if(glob%maxupd<0) glob%maxupd=50
-  if(glob%delta<0.D0) glob%delta=0.01D0
+  if(glob%delta<0.D0) then
+    glob%delta=0.01D0
+    if(glob%icoord==190) then
+      glob%delta=0.4D0
+    end if
+  end if
   if(glob%inithessian == -1) glob%inithessian = 0
   if(glob%carthessian==-1) glob%carthessian=0
   if(glob%minstep < 0.D0) glob%minstep = 1.D-5
@@ -1448,7 +2007,15 @@ subroutine dlf_default_set(nvarin)
       glob%soft=5.D-3
     end if
   end if
-  if(glob%nebk<0.D0) glob%nebk=0.01D0
+  if(glob%nebk<0.D0) then
+    glob%nebk=0.01D0
+    if(glob%icoord==190) then
+      glob%nebk=0.D0
+    end if
+  end if
+  if(glob%neb_climb_test < 0.D0) glob%neb_climb_test = 3.0D0
+  if(glob%neb_freeze_test < 0.D0) glob%neb_freeze_test = 1.0D0  
+
   if(glob%maxrot<0) glob%maxrot=10
   if(glob%tolrot<-1.D19) glob%tolrot=5.D0
 
@@ -1506,6 +2073,15 @@ subroutine dlf_default_set(nvarin)
         glob%iline=0
      end if
   end if
+
+  ! In principle could calculate the correct value for nzero
+  ! based on molecular geometry and frozen atom information.
+  ! For now safest to let the user switch it on manually.
+  if(glob%nzero<0) glob%nzero = 0
+
+  if(glob%qtsflag==-1) glob%qtsflag=0
+
+  if(glob%maxmicrocycle < 0) glob%maxmicrocycle = 100
 
 end subroutine dlf_default_set
 !!****

@@ -11,16 +11,16 @@
 !!
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Rev: 307 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_convergence.f90 $
-!! $Id: dlf_convergence.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2014-05-29 16:41:39 +0100 (Thu, 29 May 2014) $
+!! $Rev: 537 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_convergence.f90 $
+!! $Id: dlf_convergence.f90 537 2014-05-29 15:41:39Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -51,8 +51,10 @@ module dlf_convergence
   character(30),save:: message="" 
   real(rk),save     :: vale    ! Energy value
   real(rk),save     :: valg    ! Maximum gradient value
+  integer ,save     :: locg(1) ! location of the maximum grad val
   real(rk),save     :: valrmsg ! RMS gradient value
   real(rk),save     :: vals    ! Maximum step value
+  integer ,save     :: locs(1) ! location of the maximum step val
   real(rk),save     :: valrmss ! RMS step value
 end module dlf_convergence
 
@@ -86,12 +88,15 @@ subroutine convergence_test(icycle,tene,tconv)
   real(rk) :: svar
 ! **********************************************************************
 
-    ! This is initialisation in reality
+  ! This is initialisation in reality
   if(glob%tolerance<0.D0) call dlf_fail("Convergence tolerance < 0")
-  tolg=glob%tolerance
+  tolg= glob%tolerance_max_g 
+  !tolg=glob%tolerance
 
   tole=glob%tolerance_e
-  tolrmsg= tolg / 1.5D0
+
+  tolrmsg= glob%tolerance_rms_g 
+  !tolrmsg= tolg / 1.5D0
   tols=    tolg * 4.D0
   tolrmss= tolg * 8.D0/3.D0
 
@@ -121,9 +126,9 @@ subroutine convergence_test(icycle,tene,tconv)
     ls=(vals < tols)
     if(printl>0) then
       if(ls) then
-        write(stdout,1000) "Max step",vals,tols,"yes"
+        write(stdout,1001) "Max step",vals,tols,"yes",locs(1)
       else
-        write(stdout,1000) "Max step",vals,tols,"no"
+        write(stdout,1001) "Max step",vals,tols,"no",locs(1)
       end if
     end if
     
@@ -151,9 +156,9 @@ subroutine convergence_test(icycle,tene,tconv)
   lg=(valg < tolg)
   if(printl>0) then
     if(lg) then
-      write(stdout,1000) "Max grad",valg,tolg,"yes"
+      write(stdout,1001) "Max grad",valg,tolg,"yes",locg(1)
     else
-      write(stdout,1000) "Max grad",valg,tolg,"no"
+      write(stdout,1001) "Max grad",valg,tolg,"no",locg(1)
     end if
   end if
 
@@ -168,15 +173,29 @@ subroutine convergence_test(icycle,tene,tconv)
   end if
 
   ! overall convergence
+  !JLM
   !tconv=(le.and.lg.and.lrmsg)
   tconv=(le.and.lg.and.lrmsg.and.ls.and.lrmss)
-  if(printl>0.and.tconv) write(stdout,"('Converged!')")
+  !if(tene) then
+  !  tconv=(le.and.lg.and.lrmsg.and.ls.and.lrmss)
+  !else
+  !  tconv=(lg.and.lrmsg.and.ls.and.lrmss)
+  !end if
+
+  ! for qTS: ignore step and energy
+  if(glob%icoord==190) then
+    tconv=(lg)
+  end if
+
+  if (printl > 0 .and. tconv) write(stdout,'(a)') "Convergence reached"
 
   ! send convergence information to task module
   call dlf_task_set_l("CONVERGED",tconv)
 
 ! formats
 1000 format (a10,2x,es10.4," Target: ",es10.4," converged? ",a4)
+1001 format (a10,2x,es10.4," Target: ",es10.4," converged? ",a4,&
+          &" component",i6)
 end subroutine convergence_test
 !!****
 
@@ -199,6 +218,8 @@ subroutine convergence_get(name,val)
 ! **********************************************************************
   if(name=="TOLG") then
     val=glob%tolerance
+  else if (name=="VALE") then
+    val=vale
   else
     call dlf_fail("Wrong name in conv_get")
   end if
@@ -229,9 +250,12 @@ subroutine convergence_set_info(msg,nvar,energy,gradient,step)
   texternal=.true.
   vale=energy
   valg=maxval(abs(gradient(:)))
+  locg=maxloc(abs(gradient(:)))
   valrmsg=sqrt(sum(gradient(:)**2)/dble(nvar))
   vals=maxval(abs(step(:)))
+  locs=maxloc(abs(step(:)))
   valrmss=sqrt(sum(step(:)**2)/dble(nvar))
+
 end subroutine convergence_set_info
 !!****
     

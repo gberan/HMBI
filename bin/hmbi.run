@@ -1,0 +1,165 @@
+#!/bin/sh
+
+# Script for running the HMBI executable, selecting serial or
+# MPI (parallel) versions according to the number of nodes available.
+
+# Place where the HMBI executables reside
+EXE_PATH="/home/jessica/hmbi_stable/bin" 
+
+# Version for LAM MPI (http://www.lam-mpi.org)
+export MPIHOME=/home/software/qc_ext_libs/openmpi/
+export LAMHOME=$MPIHOME
+# Make sure that our MPI version is first in PATH
+export PATH=${MPIHOME}/bin:$PATH
+
+# Name of serial and parallel HMBI executables
+HMBIEXE="hmbi.serial"
+HMBIEXE_PAR="hmbi.parallel"
+
+# Utility commands:
+# Remote-shell: Use Secure Shell (SSH) with appropriate flags
+RSH="ssh -n -x "
+# Super-kill (ftp://fast.cs.utah.edu/pub/skill/)
+KILL="skill -v -9"
+
+#-----------------------------------------------------------------
+
+# Default is serial job
+NPROCS=$2
+if test -z $NPROCS ;
+then
+  NPROCS=1
+fi
+#echo nprocs =  $NPROCS
+PARALLEL=true
+#echo "this is the PE_HOSTFILE " $PE_HOSTFILE 
+
+# Sun Grid Engine
+if [ "$PE_HOSTFILE" ] ; 
+then
+        echo "Contents of the PE_HOSTFILE"        
+        echo "--------------------------------------"
+        cat $PE_HOSTFILE
+        echo "--------------------------------------"
+        echo "Plan to use $NSLOTS processors on $NHOSTS nodes"
+
+
+        # GJB prepare lamboot list
+        cat $PE_HOSTFILE | awk '{print $1,$2}' > hold.$JOB_ID.txt
+        lengthFile=`less hold.$JOB_ID.txt | wc -l`
+        for i in `seq 1 $lengthFile` 
+        do
+          name=`awk "NR==$i" hold.$JOB_ID.txt | awk '{print $1}'`
+       	  num=`awk "NR==$i" hold.$JOB_ID.txt |	awk '{print $2}'`
+          for j in `seq 1 $num`           
+          do
+            echo $name >> tmp.$JOB_ID
+          done
+        done
+        rm hold.$JOB_ID.txt
+        
+        echo "My pruned HOSTFILE ="
+        echo "--------------------------------------"
+        cat tmp.$JOB_ID
+        echo "--------------------------------------"
+        MACHINEFILE=tmp.$JOB_ID
+
+        # set the number of processors
+        NPROCS=$NSLOTS
+fi
+
+# Check for local host file that overrides others
+if [ -e 'hosts.txt' ]; then
+        MACHINEFILE='hosts.txt'      
+        NPROCS=`wc -l < $MACHINEFILE`
+fi
+
+# Define number of processors
+if  [ "$MACHINEFILE" ]; 
+then 
+        echo This job has allocated the following $NPROCS nodes:
+        echo `cat $MACHINEFILE`
+fi
+
+INPUT_FILE=$1
+#echo "input file is" $INPUT_FILE
+check=`grep -i "qm_code" $INPUT_FILE| awk '{print toupper($3)}'`
+#echo "check is:" $check
+if [ "$check" == "QE" -o "$check" == "QUANTUMESPRESSO" -o "$check" == "QUANTUM_ESPRESSO" ]; then
+  echo "Found a Quantum Espresso Job. Will initialize in serial"
+  PARALLEL=false
+else
+  donothing=true
+fi
+
+#-----------------------------------------------------------------
+
+# Run serial or parallel HMBI (using LAM/MPI)
+        
+if test ${NPROCS} -gt 1 && $PARALLEL;
+then
+        echo "Parallel HMBI.   NPROCS = $NPROCS"
+
+        # The multi-CPU (parallel) version using MPI message-passing
+        # list nodes 
+        if [ -e 'hosts.txt' ]; then
+          cat $MACHINEFILE
+        fi
+
+        # Verify nodes 
+        #$MPIHOME/bin/recon -v $MACHINEFILE
+
+        # Booting LAM
+        #$MPIHOME/bin/lamboot -v $MACHINEFILE
+
+        #echo "Running LAM"
+        echo "Running MPI"
+        echo $PWD
+        #MPIRUN_ARGS="-O -np ${NPROCS}"
+        MPIRUN_ARGS=" -np ${NPROCS}"
+        ARGS="${NPROCS}"
+
+	# Print the execution string, then execute
+        echo "Running: $MPIHOME/bin/mpirun ${MPIRUN_ARGS} ${EXE_PATH}/${HMBIEXE_PAR} $1 $ARGS"
+        $MPIHOME/bin/mpirun ${MPIRUN_ARGS} ${EXE_PATH}/${HMBIEXE_PAR} $1 $ARGS
+
+        echo "Cleaning MPI"
+        # Cleaning LAM 
+        #$MPIHOME/bin/lamclean -v 
+
+        echo "halting MPI"
+        # Terminating LAM 
+        #$MPIHOME/bin/lamhalt
+
+        # Clean up after parallel jobs (beware in case of SMP-nodes)
+        if [ -e 'hosts.txt' ]; then
+           for node in `cat $MACHINEFILE`
+           do
+                $RSH $node $KILL hmbi.run
+           done
+        fi
+
+        # Delete the temporary file created above
+        #echo "Trying to delete temp file"
+        if [ -e "tmp.$JOB_ID" ]; then
+                echo "deleting tmpfile"
+                rm -f tmp.$JOB_ID
+        fi
+
+
+elif [ $NPROCS -eq 1 -o !$PARALLEL ];
+then      
+        echo "Serial HMBI"
+        ARGS="${NPROCS}"
+        ### The single-CPU (serial) version
+        echo Running ${EXE_PATH}/${HMBIEXE} $1 $ARGS
+        exec ${EXE_PATH}/${HMBIEXE} $1 $ARGS
+
+else
+        echo Invalid number of processors: ${NPROCS}
+        echo The list of machines given to HMBI was:
+        cat $MACHINEFILE 
+        exit 1
+fi
+
+

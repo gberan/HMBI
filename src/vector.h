@@ -5,6 +5,9 @@
 #include <ostream>
 #include <math.h>
 #include <string>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 using std::string;
 
 /* 
@@ -33,6 +36,9 @@ class Vector {
   // Initialize vector elements to 0.0
   void Set() {for (int i=0;i<dim;i++) {vec[i] = 0.0;}};
 
+  // Initialize vector so every element in vector has the same value
+  void Set(double value) {for(int i=0;i<dim;i++) {vec[i] = value;}};
+
   // Return the number of vector elements
   int GetLength() const {return dim;};
   // Return pointer to the full vector, use with care
@@ -49,17 +55,17 @@ class Vector {
     return vec[i];
   }
 
-  // Get range of elements from first to last, inclusive
-  Vector GetRange(int first, int last);
-
   // Sort in descending order
   void SortLargestFirst();
+  //returns the mapping of the original locations in the vector
+  Vector SortLargestFirstAndReturn();
 
+  //Finds the FIRST location an element in the Vector
+  //returns the element number
+  int Find(double find);
 
   // Print out vector
-  void Print(string title); // print as column vector
-  void PrintTranspose(string title, int N_per_line = 6); // print vector in 
-                                                         // rows of N_per_line
+  void Print(string title);
   void PrintGradient(string title);
 
   // Compute Dot product of vector with another
@@ -73,25 +79,27 @@ class Vector {
   double Norm();
   // Return Norm/sqrt(dim)
   double RMS();
+
   double Max(bool AbsVal=false);
-  //double Min(bool AbsVal=false);
+  double Min(bool AbsVal=false);
   
   // Multiply Vector by a scalar
   void Scale(double coeff) const;
   // Normalize vector
   void Normalize();
-  // Count number of nonzero elements
+  // Count number of positive elements
   int Nonzero();
+  //Count number of non positive elements
+  int Nonpositive(){return GetLength() - Nonzero();};
 
   // Rotate vector by 'angle' degrees about an arbitrary 'axis'
   Vector RotateAboutAxis3D( double angle, Vector axis);
 
-  // Add two vectors.  By default vectors must have same size.  But if
-  // bool flag = true, then can add two different sized ones by just
-  // treating the missing elements in the smaller vector as zeroes.
-  Vector Add(const Vector& other, bool size_mismatch_ok=false);
-  // Same as above, but "other" is added to the current vector.
-  Vector AddTo(const Vector& other, bool size_mismatch_ok=false);
+  // Set vector with incrementally increasing entries from a starting value
+  void Incremental(int Start = 1);
+
+  //Vector with incremental integer values, increasing or decreasing
+  void IncrementalEntries(bool increasing);
 
   // Overload operators
   Vector& operator=(const Vector& other);
@@ -99,7 +107,7 @@ class Vector {
   Vector& operator-=(const Vector& other);
 
   Vector& operator*=(double coeff); // untested, may not work
-  
+  Vector& operator*(double coeff); //untested, may not work
 
   //friend Vector operator+( Vector V1, Vector V2)
 
