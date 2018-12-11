@@ -1,8 +1,6 @@
 #include <string>
-#include <algorithm>
 using std::string;
 #include "multipole.h"
-
 
 Multipole::Multipole(): Rank(-1), Nmom(0) {
 
@@ -90,60 +88,27 @@ Multipole& Multipole::Scale(double factor) {
   return *this;
 }
 
-// Add two multipole vectors of equivalent rank or different rank.
+// Add to multipole vectors of equivalent rank
 Multipole Multipole::operator+(const Multipole& other) {
 
-  // Create an empty multipole object with the proper rank.  If the
-  // rank of the input multipoles differ, the final multipole adopts
-  // the larger of the two ranks.
+  // First test that the ranks of the two multipole vectors are
+  // identical
+  if (other.Rank != Rank) {
+    printf("ERROR: Multipole addition requires both multipoles have the same rank\n");
+    exit(1);
+  }
+
+  // Create an empty multipole object with the proper rank
   Multipole result;
-  int max_rank;
+  result.Initialize(Rank);
 
-  (Rank >= other.Rank) ? max_rank = Rank : max_rank = other.Rank;
-  //if (Rank >= other.Rank) max_rank = Rank;
-  //else max_rank = other.Rank;
-  result.Initialize(max_rank);
-
-  result.Moments =  Moments.Add(other.Moments,true);
-  //result.Moments += other.Moments;
-
-  /*
-  if (other.Rank == Rank) {
-    result.Moments = Moments;
-    result.Moments += other.Moments;
-  }
-  else { // ranks differ, just add element-by-element.
-
-    for (int i=0;i<Nmom;i++)
-      result.GetMoments()(i) = Moments.GetMoments()(i);
-    for (i=0;i<other.Nmom;i++)
-      result.GetMoments()(i) += other.Moments.GetMoments()(i);
-
-  }
-    */
+  result.Moments = Moments;
+  result.Moments += other.Moments;
 
   return result;
 
 }
 
-// Add another multipole to the current one.
-Multipole& Multipole::operator+=(const Multipole& other) {
-
-  // First test that the ranks of both are equal. of other is less than or equal to rank of this.
-
-
-  if (other.Rank != Rank) {
-    printf("ERROR: Multipole += operator requires both multipoles have the same rank.\n");
-    printf("       The multipole + operator can handle mixed-rank addition.\n");
-    exit(1);
-  }
-
-
-  Moments += other.Moments;
-
-  return *this;
-
-}
 
 
 // Overload the '=' operator
@@ -195,17 +160,78 @@ void Multipole::Print(string title) {
   printf("\n");
 }
 
-// debugging routine: use to zero out all moments except dipole & quadrupole.  Helpful with
-// testing some induction routines, but serves no general purpose.
-void Multipole::MaskElements() {
-
-  printf("Masking multipole moments\n");
-  Moments[0] = 0.0;
-  if (Nmom > 9) {
-    for (int i=9;i<Nmom;i++)
-      Moments[i]=0.0;
+// JDH use in Dalton multipole emb. 
+Vector Multipole::Spherical_to_Cartesian(Multipole Spherical){
+//converts from spherical moments to cartesian moments
+  Vector S_mom = Spherical.GetMomentsVector();
+  int dim,rank = Spherical.GetRank();
+  if(rank==0){//dim of cartesian moments vector
+    dim=1;
   }
+  else if(rank==1){
+    dim=4;
+  }
+  else if(rank==2){
+    dim=10;
+  }
+  else if(rank==3){
+    dim=20;
+  }
+  else if(rank==4){
+    dim=35;
+  }
+    double rt2 = 1.4142135623730950488, rt3 = 1.7320508075688772935, rt8=2.8284271247461900976, rt5 = 2.2360679774997896964, rt7 = 2.6457513110645905905;
+    double rt10=rt2*rt5, rt12=rt2*rt3*rt2, rt16=rt8*rt2,rt24=rt12*rt2, rt35=rt5*rt7, rt42=rt2*rt3*rt7, rt70=rt2*rt5*rt7;
+//precompute some roots because they are handy
+//note the moments are stored as xx xy xz yy yz zz or xxx xxy xxz xyy xyz xzz yyy yyz yzz zzz for use in dalton
+//Not the weird order Stone uses!
+  Vector C_mom(dim);
+  //charge and dipole are identical between spherical and cartesian
 
-  //Print("Masked multipole moments");
-
+  if(rank>=0)
+    C_mom[0]=S_mom[0];
+  if(rank>=1){
+    C_mom[1]=S_mom[1];
+    C_mom[2]=S_mom[2];
+    C_mom[3]=S_mom[3];
+  }
+  if(rank>=2){
+    C_mom[4]=-(1.0/2.0)*S_mom[4]+(1.0/2.0)*rt3*S_mom[7];//xx
+    C_mom[5]=(1.0/2.0)*rt3*S_mom[8];//xy
+    C_mom[6]=(1.0/2.0)*rt3*S_mom[5];//xz
+    C_mom[7]=-(1.0/2.0)*S_mom[4]-(1.0/2.0)*rt3*S_mom[7];//yy
+    C_mom[8]=(1.0/2.0)*rt3*S_mom[6];//yz
+    C_mom[9]=S_mom[4];//zz
+  }
+  if(rank>=3){
+    C_mom[10]=(rt5/rt8)*S_mom[14]-(rt3/rt8)*S_mom[10];//xxx
+    C_mom[11]=(rt5/rt8)*S_mom[15]-(1.0/rt24)*S_mom[11];//xxy
+    C_mom[12]=(rt5/rt12)*S_mom[12]-(1.0/2.0)*S_mom[9];//xxz
+    C_mom[13]=(rt5/rt8)*S_mom[14]-(1.0/rt24)*S_mom[10];//xyy
+    C_mom[14]=(rt5/rt12)*S_mom[13];//xyz
+    C_mom[15]=(rt2/rt3)*S_mom[10];//xzz
+    C_mom[16]=(rt5/rt8)*S_mom[15]-(rt3/rt8)*S_mom[11];//yyy
+    C_mom[17]=-(rt5/rt12)*S_mom[12]-(1.0/2.0)*S_mom[9];//yyz
+    C_mom[18]=(rt2/rt3)*S_mom[11];//yzz
+    C_mom[19]=S_mom[9];//zzz
+  }
+  if(rank>=4){
+    C_mom[20]=(3.0/8.0)*S_mom[16]-(1.0/4.0)*rt5*S_mom[19]+(1.0/32.0)*rt35*S_mom[23];//xxxx
+    C_mom[21]=(1.0/8.0)*(-rt5*S_mom[20]+rt35*S_mom[24]);//xxxy
+    C_mom[22]=(1.0/16.0)*(-rt10*S_mom[17]+rt70*S_mom[21]);//xxxz
+    C_mom[23]=(1.0/8.0)*S_mom[16]-(1.0/32.0)*rt35*S_mom[23];//xxyy
+    C_mom[24]=(1.0/16.0)*(-rt10*S_mom[18]+rt70*S_mom[22]);//xxyz
+    C_mom[25]=-(1.0/2.0)*S_mom[16]+(1.0/4.0)*rt5*S_mom[19];//xxzz
+    C_mom[26]=-(1.0/8.0)*(rt5*S_mom[20]+rt35*S_mom[24]);//xyyy
+    C_mom[27]=-(1.0/16.0)*(rt10*S_mom[17]+rt70*S_mom[21]);//xyyz
+    C_mom[28]=(1.0/4.0)*rt5*S_mom[20];//xyzz
+    C_mom[29]=(5.0/8.0)*S_mom[17];//xzzz
+    C_mom[30]=(3.0/8.0)*S_mom[16]+(1.0/4.0)*rt5*S_mom[19]+(1.0/32.0)*rt35*S_mom[23];//yyyy
+    C_mom[31]=-(1.0/16.0)*(3.0*rt10*S_mom[18]+rt70*S_mom[22]);//yyyz
+    C_mom[32]=-(1.0/2.0)*S_mom[16]-(1.0/4.0)*rt5*S_mom[19];//yyzz
+    C_mom[33]=(rt5/rt8)*S_mom[18];//yzzz
+    C_mom[34]=S_mom[16];//zzzz
+  }
+ 
+  return C_mom;
 }

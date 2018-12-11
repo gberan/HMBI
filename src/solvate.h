@@ -3,9 +3,9 @@
 #include <iostream>
 using std::istringstream; // part of iostream
 #include <stdio.h>
-#include <fstream.h>
+#include <fstream>
 #include <cassert>
-#include <iomanip.h>
+#include <iomanip>
 #include <math.h>
 #include <sstream>
 #include <stdlib.h>

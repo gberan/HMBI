@@ -7,7 +7,7 @@
 using namespace std;
 #include "multipole.h"
 #include "polarizability.h"
-
+#include "matrix.h"
 /* 
    A class for individual atoms.  
 
@@ -37,6 +37,7 @@ class Atom {
 
   Vector xyz; // Cartesian Position in global coordinates, Angstroms
   Vector local_xyz; // Position in local coordinates, Angstroms
+  Vector fractional_xyz; //Fractional Coordinates
 
   double point_charge; // point charge, used for charge embedding
 
@@ -45,6 +46,33 @@ class Atom {
   int MM_atom_type; 
   int Nconnected; // number of connected atoms
   int *connectivity; // list of connected atoms numbers
+
+  //Use for optimation under symmetry and the AIFF
+  int global_index;// unique index for all monomers in the unit cell
+  int Sym_Atom;//states which atom is symmetrical to in the asymmetrical unit cell
+  bool freeze_atom;//atom is frozen during optimization
+  int lock_x;//the position of x is dependent on y(if value is 1) or z(if value is 2)
+  bool lock_y;//the position of y is dependent on z
+
+
+  bool change_x_sign;//if x is locked, sign of grad may have to be changed to match y or z
+  bool change_y_sign;//if y is locked, sign of grad may have to be changed to match z  
+  bool freeze_x;//if freeze x
+  bool freeze_y;//if freeze y
+  bool freeze_z;//if freeze z
+  Vector Shift_Vector;//fractional coordinates that atoms have to be shifted by to preserve symmetry 
+                      //while maintaining the cartesian coordinates of the degrees of freedom
+
+
+
+  int lock_z;//the position of x is dependent on z(if value is 1) or y(if value is 2)
+  //bool change_y_sign;//if y is locked, sign of grad may have to be changed to match x
+  bool change_z_sign;//if z is locked, sign of grad may have to be changed to match x or y
+
+  Matrix Rotation;//Rotation to the Sym_Atom
+  Matrix Fractional_Rotation;//Rotation in fractional coordinates
+  Vector Fractional_Translation;//Translational vector that accompanies the fractional rotation operator
+
 
   Multipole MultipoleMoments; // Stores the permanent multipole moments
   // Induced moments are stored in the Dimer or Cluster, since they depend on
@@ -73,15 +101,38 @@ class Atom {
   bool init_pols;
 
 
+  //////////////////////////////////////////////////////
+  // JDH's functions for Magnetic property calculations:
+  //////////////////////////////////////////////////////
+  // NMR 
+  Matrix Monomer3x3Tensor;
+  Matrix TwoBody3x3Tensor;
+  Matrix Cluster3x3Tensor;
+
+  // Charge
+  double EmbeddedCharge;
+  double EmbeddedChargeTwoBody;
+  
+  int MixedBasisRegion_; // JDH, 1 = large, 2 = medium, 3 = small...
+
+  double EwaldPotential;
+  double EwaldFitPotential;
+  double FixedPotential;
+  
+  double van_der_waals_radius;
+  //int van_der_waals_surface_nVert;
+  //Matrix van_der_waals_surface;
+  //Matrix ewald_test_point_surface;
+  
  public:
   // Constructors & Destructor
   Atom(); // The real work is done by Initialize
   Atom(const Atom &other); // copy constructor
   ~Atom();
   // The function to populate the objects:
-  void Initialize(int index, string symbol, double x, double y, double z, 
+  void Initialize(int index, int previous_atoms,string symbol, double x, double y, double z, 
 		  double charge=0.0); //q-chem style xyz
-  void Initialize(int index, string symbol, double coord[3], int type, int
+  void Initialize(int index,int previous_atoms, string symbol, double coord[3], int type, int
 		  Nconnect, int *connect, double charge = 0.0); // tinker-style xyz
 
   void SetPosition(double new_xyz[3]); // for moving atoms
@@ -92,6 +143,10 @@ class Atom {
   void SetLocalPosition(double new_loc_xyz[3]); // for local positions by Ali
   Vector GetLocalPosition() {return local_xyz;}; // return local coords vector
   double GetLocalPosition(int dim) {return local_xyz[dim];}; // get one element of local_xyz (dim =0,1,2) by Ali
+
+  void SetFractionalPosition(Vector New_Fract); 
+  Vector GetFractionalPosition() {return fractional_xyz;};
+  double GetFractionalPosition(int dim) {return fractional_xyz[dim];};
  
   // For working with isotropic frequency-dependent polarizabilities - by shuhao
   // dipole-dipole polarizabilities:
@@ -114,15 +169,56 @@ class Atom {
   void SetInduceMultipoleMoments(const Multipole& Inducemoments) {InduceMultipoleMoments = Inducemoments;  init_InduceMultipoles = true;};// by shuhao
   Multipole GetInduceMultipoleMoments() {return InduceMultipoleMoments;};// by shuhao
   
-
-
   bool MultipolesAreInitialized() {return init_multipoles;};  
   bool InduceMultipolesAreInitialized() {return init_InduceMultipoles;}; // by shuhao
   bool PolarizabilityIsInitialized() {return init_pols;};
 
-  double GetAtomicInductionDampingFactor(); // GJB exploratory
 
+  //symmetry information
   int GetAtomIndex() {return atom_index;}; // get atom index by Ali
+  int GetGlobalIndex() {return global_index;}//get global atom index by yoni
+  void ResetSymmetry();
+  void SetSymmetricalAtom(int SymAtom) {Sym_Atom = SymAtom;};
+  int GetSymmetricalAtom() {return Sym_Atom;};
+  void SetAtomToFrozen(bool frozen) {freeze_atom = frozen;};
+  int IsAtomFrozen() {return freeze_atom;};
+  void LockX(int lock) {lock_x = lock;};
+  int IsXLocked() {return lock_x;};
+  void LockY(bool lock) {lock_y = lock;};
+  bool IsYLocked() {return lock_y;};
+  void SetXGradSign(bool change_sign) {change_x_sign = change_sign;};
+  bool ChangeXSign() {return change_x_sign;};
+  void SetYGradSign(bool change_sign) {change_y_sign = change_sign;};
+  bool ChangeYSign() {return change_y_sign;};
+  void SetFreezeX(bool freeze){freeze_x = freeze;};
+  bool FreezeX(){return freeze_x;};
+  void SetFreezeY(bool freeze){freeze_y = freeze;};
+  bool FreezeY(){return freeze_y;};
+  void SetFreezeZ(bool freeze){freeze_z = freeze;};
+  bool FreezeZ(){return freeze_z;};   
+
+  void LockZ(int lock) {lock_z = lock;};
+  int IsZLocked() {return lock_z;}
+  void SetZGradSign(bool change_sign) {change_z_sign = change_sign;};
+  bool ChangeZSign() {return change_z_sign;};
+
+
+  void SetShiftByA(double shift){Shift_Vector[0] = shift;};
+  double ShiftByA(){return Shift_Vector[0];};
+  void SetShiftByB(double shift){Shift_Vector[1] = shift;};
+  double ShiftByB(){return Shift_Vector[1];};
+  void SetShiftByC(double shift){Shift_Vector[2] = shift;};
+  double ShiftByC(){return Shift_Vector[2];};
+  void SetShiftVector(Vector Shift){Shift_Vector = Shift;}
+  Vector GetShiftVector(){return Shift_Vector;};
+  
+  void SetRotationMatrix(Matrix Rot) {Rotation = Rot;};
+  Matrix GetRotationMatrix() {return Rotation;};
+  void SetFractRotationMatrix(Matrix Rot){Fractional_Rotation = Rot;};
+  Matrix GetFractionalRotationMatrix() {return Fractional_Rotation;};
+  void SetFractTranslationVector(Vector Trans){Fractional_Translation = Trans;};
+  Vector GetFractTranslationVector(bool FromUniqueToThis); //{return Fractional_Translate;};
+
   int GetAtomicNumber();
   void SetAtomicMass();
   double GetAtomicMass() {return mass;};
@@ -130,6 +226,12 @@ class Atom {
   int GetMMAtomType() {return MM_atom_type;};
   int GetNumberOfConnectedAtoms() {return Nconnected;};
   int GetConnectivity(int i) {return connectivity[i];};
+  bool InAsymmetricUnit() {
+    if(GetSymmetricalAtom() == GetGlobalIndex())
+      return 1;
+    else return 0;
+  }
+
 
   void SetDispersionAtomType(string type) {DispersionAtomType_ = type;};
   string GetDispersionAtomType() {return DispersionAtomType_;};
@@ -164,21 +266,33 @@ class Atom {
   // Routines to evaluate classical interactions
   // Construct Tab matrix
   Matrix BuildInteractionMatrix(Vector thisRotVec, double thisRotAng, 
-				Atom& other, Vector otherRotVec,
-				double otherRotAng, double beta_damp);
+  			Atom& other, Vector otherRotVec,
+  			double otherRotAng, double beta_damp);
+  Matrix BuildInteractionMatrix(Matrix thisRotation, Atom& other, 
+  				Matrix otherRotation, double beta_damp);
   Matrix BuildInteractionMatrixGradient(Matrix Tab, Vector thisRotVec, 
 					double thisRotAng, 
 					Atom& other, Vector otherRotVec,
 					double otherRotAng, double beta_damp);
+  Matrix BuildInteractionMatrixGradient(Matrix Tab, Matrix thisRotMat, 
+					Atom& other, Matrix otherRotMat,
+					double beta_damp);
+
   // Routines to evaluate classical interactions in periodic systems
   // Construct reciprocal space Tab matrix for
   // Aatom-with-imageatoms----Batom-with-imageatoms // by shuhao
-   Matrix BuildRecipInteractionMatrix(Vector thisRotVec, double thisRotAng,
-				      Atom& other, Vector otherRotVec, 
-				      double otherRotAng, 
-				      int kx, int ky, int kz, double CellV,
-				      Vector RecipCellx, Vector RecipCelly, 
-				      Vector RecipCellz, double beta_damp); 
+  Matrix BuildRecipInteractionMatrix(Matrix thisRotMat, Atom& other,  Matrix otherRotMat, 
+				     int kx, int ky, int kz, double CellV,
+				     Vector RecipCellx, Vector RecipCelly, 
+				     Vector RecipCellz, double beta_damp); 
+
+
+  Matrix BuildRecipInteractionMatrix(Vector thisRotVec, double thisRotAng,
+				     Atom& other, Vector otherRotVec, 
+				     double otherRotAng, 
+				     int kx, int ky, int kz, double CellV,
+				     Vector RecipCellx, Vector RecipCelly, 
+				     Vector RecipCellz, double beta_damp); 
    
   // Construct direct space Tab matrix for
   // Aatom-with-imageatoms----Batom-with-imageatoms // by shuhao
@@ -188,23 +302,19 @@ class Atom {
 				      int nz, double CellV, Vector UnitCellx, 
 				      Vector UnitCelly, Vector UnitCellz, 
 				      double beta_damp); 
+   Matrix BuildDirecInteractionMatrix(Matrix thisRotation, Atom& other, 
+				      Matrix otherRotation, 
+				      int nx, int ny, int nz,
+				      double CellV, Vector UnitCellx, 
+				      Vector UnitCelly, Vector UnitCellz, 
+				      double beta_damp);
+   
    // for the case of |kn| =0 in the reciprocal space; by shuhao
-   Matrix OldBuildRecipInteractionMatrix_kn0(Vector thisRotVec, double thisRotAng,
-					  Atom& other, Vector otherRotVec,
-					  double otherRotAng, int kx, int ky, 
-					  int kz, double CellV, 
-					  Vector RecipCellx, Vector RecipCelly,
+   Matrix BuildRecipInteractionMatrix_kn0(Matrix thisRotation,Atom& other, Matrix otherRotation,
+					  int kx, int ky, int kz, double CellV,
+					  Vector RecipCellx, Vector RecipCelly, 
 					  Vector RecipCellz, double beta_damp);
-
-   // for the case of |kn| =0 in the reciprocal space; GJB version
-   // that is slightly more efficient than original.  Could still be made
-   // better by reducing the size of Tab.
    Matrix BuildRecipInteractionMatrix_kn0(Vector thisRotVec, double thisRotAng,
-					  Atom& other, Vector otherRotVec,
-					  double otherRotAng, double CellV, 
-					  Vector RecipCellx, Vector RecipCelly,
-					  Vector RecipCellz);
-   Matrix BuildRecipInteractionMatrix_kn0_2(Vector thisRotVec, double thisRotAng,
 					  Atom& other, Vector otherRotVec,
 					  double otherRotAng, int kx, int ky, 
 					  int kz, double CellV, 
@@ -226,7 +336,11 @@ class Atom {
    double TangToenniesDampingFactor(int n, double beta, double R, 
 				    int ideriv=0);
   
-
+   void PrintMolProEmbeddingCharges(FILE *outfile=stdout) {
+       // First Print the charge term centered on the atom:
+       fprintf(outfile, "%10.6f,%10.6f,%10.6f,%10.6f,0\n", xyz[0],xyz[1],
+	       xyz[2], GetMultipoleMoments().GetMoments().Element(0)  );
+   }
 
   // Printing commands
   void PrintQChemCartesian(FILE *outfile=stdout) {
@@ -239,6 +353,8 @@ class Atom {
     fprintf(outfile, "%10.6f  %10.6f  %10.6f  %10.6f\n", xyz[0],xyz[1],
 	    xyz[2], point_charge);};
   void PrintTinkerCartesian(int shift=0, FILE *outfile=stdout);
+  void PrintTinkerCartesian(double x,double y,double z,
+			    int shift=0, FILE *outfile=stdout );
   void PrintTinkerEmbeddingCharge(int shift=0, FILE *outfile=stdout);
 
   // Operator overloading
@@ -269,15 +385,45 @@ class Atom {
   double CasimirC6Coefficient(Atom other);
   double CasimirC8Coefficient(Atom other);
   double CasimirC10Coefficient(Atom other);
-
+  
   // Compute the C9 coefficient between this atom and 2 others
   double CasimirC9Coefficient(Atom other1, Atom other2);
 
   // GaussLegendre method for the Casimir-Polder integration
   Vector GaussLegendreWeights(double x1, double x2, int n);
   
+  //////////////////////////////////////////////////////
+  // JDH's functions for Magnetic property calculations:
+  //////////////////////////////////////////////////////  
+  void SetMonomer3x3Tensor(Matrix tensor3x3);
+  void SetTwoBody3x3Tensor(Matrix tensor3x3);
+  void SetCluster3x3Tensor(Matrix tensor3x3);
+  
+  Matrix GetMonomer3x3Tensor() { return Monomer3x3Tensor;};
+  Matrix GetTwoBody3x3Tensor() { return TwoBody3x3Tensor;};
+  Matrix GetCluster3x3Tensor() { return Cluster3x3Tensor;};
 
+  void PrintEmbeddingCharges(FILE *outfile);
+  void SetEmbeddedCharge(double charge_) { EmbeddedCharge = charge_; };
+  double GetEmbeddedCharge() { return EmbeddedCharge; };
+  void SetEmbeddedChargeTwoBody( double charge_) { EmbeddedChargeTwoBody = charge_; };
+  double GetEmbeddedChargeTwoBody() { return EmbeddedChargeTwoBody; };
 
+  double GetEwaldPotential() { return EwaldPotential;};
+  void SetEwaldPotential( double pot) { EwaldPotential = pot;};
+
+  double GetEwaldFitPotential() { return EwaldFitPotential;};
+  void SetEwaldFitPotential( double pot) { EwaldFitPotential = pot;};
+
+  double GetFixedPotential() { return FixedPotential;};
+  void SetFixedPotential( double pot) { FixedPotential = pot;};
+  
+  void SetMixedBasisRegion(int i) {MixedBasisRegion_ = i; }; // JDH
+  int GetMixedBasisRegion() { return MixedBasisRegion_;}; // JDH
+
+  double GetVanDerWaalsRadius(); //{ return van_der_waals_radius;};
+
+  
 };
 
 #endif

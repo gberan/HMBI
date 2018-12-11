@@ -250,7 +250,8 @@ Monomer ReadCoordinates(ifstream& infile, int Natoms) {
 
   Monomer Geom;
   int charge = 0; int spin = 1;
-  Geom.Initialize(1,charge,spin,symbols,xyz,Natoms,atom_types,Nconnected,Connectivity);
+string type = "type1";//yoni : added from Kaushik's code: added type to function 
+ Geom.Initialize(1,0,charge,spin,type,symbols,xyz,Natoms,atom_types,Nconnected,Connectivity);
 
   delete [] symbols;
   delete [] xyz;
@@ -273,7 +274,8 @@ Monomer MergeTwoMonomers(Monomer MonA, Monomer MonB) {
 
   int charge = MonA.GetChargeState() + MonB.GetChargeState();
   int spin = 1;  // assume singlet.  For now anyways, it doesn't matter.
-  // we don't use spin for anything.  
+  // we don't use spin for anything.
+  string type = "type1";//yoni : added from Kaushik's code  
 
   // Arrays to store all key info for combined system
   string *symbols = new string [Ntot];
@@ -303,10 +305,10 @@ Monomer MergeTwoMonomers(Monomer MonA, Monomer MonB) {
     for (int q=0;q<Nconnected[iatom+Na];q++) 
       Connectivity[6*(Na+iatom)+q] = MonB.GetAtom(iatom).GetConnectivity(q) + Na;   
   }
-
-  
-  AB.Initialize(1,charge,spin,symbols,xyz,Ntot,atom_types,
-		Nconnected,Connectivity);
+ 
+  //yoni: global index not used because it is not need
+  AB.Initialize(1,0,charge,spin,type,symbols,xyz,Ntot,atom_types,
+		Nconnected,Connectivity);//yoni : added type from Kaushik's code
 
   return AB;
 }
@@ -318,6 +320,7 @@ Monomer CreateAmoebaWaterMolecule() {
   int Natoms = 3;
   int charge = 0;
   int spin = 1;
+  string type = "type1";//yoni : added from Kaushik's code
   string symbols[3] = {"O","H","H"};
   double xyz[9] = {0.000000,  0.000000, -0.111140, 
 		   0.763309,  0.000000,  0.472345,
@@ -330,9 +333,10 @@ Monomer CreateAmoebaWaterMolecule() {
   Connectivity[12] = 1; // H2 atom
 
   Monomer Water;
-  Water.Initialize(1,charge,spin,symbols,xyz,Natoms,atom_types,Nconnected,Connectivity);
+  //yoni:Global indexing not used because it is not needed
+  Water.Initialize(1,0,charge,spin,type,symbols,xyz,Natoms,atom_types,Nconnected,Connectivity);//yoni : added type from Kaushik's code
   printf("Generic Water:\n");
-  Water.PrintTinkerCartesian();  
+  Water.PrintTinkerCartesian(); 
 
   return Water;
 }
@@ -344,6 +348,7 @@ Monomer CreateAmoebaBenzeneMolecule() {
   int Natoms = 12;
   int charge = 0;
   int spin = 1;
+  string type = "type1";//yoni : added from Kaushik's code
   string symbols[12] = {"C","C","C","H","H","H","C","C","C","H","H","H"};
   double xyz[3*12] = {-0.576018,    1.288201,   -0.025687,
 		   -1.060122,    0.317183,    0.878326,
@@ -377,7 +382,9 @@ Monomer CreateAmoebaBenzeneMolecule() {
 
 
   Monomer Benzene;
-  Benzene.Initialize(1,charge,spin,symbols,xyz,Natoms,atom_types,Nconnected,Connectivity);
+//yoni: added type from Kaushik's code
+  //yoni:Global indexing not used because it is not needed
+  Benzene.Initialize(1,0,charge,spin,type,symbols,xyz,Natoms,atom_types,Nconnected,Connectivity);
   printf("Generic Benzene:\n");
   Benzene.PrintTinkerCartesian();  
 

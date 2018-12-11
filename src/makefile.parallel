@@ -18,8 +18,8 @@ CC = icpc
 FC = ifort
 
 # Parallel version macros
-MPICC = /home/software/qc_ext_libs/openmpi/bin/mpiCC
-
+#MPICC = /opt/intel/compilers_and_libraries_2016.3.210/linux/mpi/intel64/bin/mpicc
+MPICC = /usr/bin/mpiCC
 
 PARALLEL = -DPARALLEL
 
@@ -32,18 +32,27 @@ PARALLEL = -DPARALLEL
 # Macros that apply to all versions
 
 #LITHIUM:    
-#LDFLAGS =  -L/opt/intel/compilers_and_libraries/linux/compiler/lib/intel64 -lifcore -limf -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+
+LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -lifcore -limf -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+
+
+#LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -limf -lifcore -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
 
 
 # MAV:
-LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -limf -lifcore -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+#LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -limf -lifcore -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
+
+#LDFLAGS =  -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64/ -lifcore -limf -lintlc -liomp5 -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread  # bunh of valgrind errors
 
 
 #/opt/intel/compilers_and_libraries_2016.3.210/linux/mkl/lib/intel64
 # -lguide -lmkl -lmkl_lapack -lmkl_em64t -lpthread -lifport
 #DEBUG = -g -std=gnu++11 -O0
-DEBUG = -g -C 
+DEBUG = -g -std=gnu++11
 CFLAGS = ${DEBUG} -Wno-deprecated 
+
+
+#LDFLAGS =  -L/share/storage/intel/v9/fce/9.1.052/lib/ -lifcore -limf -L/opt/intel/v9/mkl/9.1.023/lib/em64t -lguide  -lmkl -lmkl_lapack -lmkl_em64t -lpthread -lifport
 
 # Begin targets
 
@@ -79,13 +88,13 @@ dlfind:
 
 # Notation: $@ = target name, $< = source name
 %_ser.o: %.C atom.h supercell.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h sphere_grid.h nmr.h ee.h\
-	opt.h params.h polarizability.h vector.h dlf_interface.h  quasiharmonic.h $(KNITRO_INC) 
+	params.h polarizability.h vector.h dlf_interface.h  quasiharmonic.h $(KNITRO_INC) 
 	 $(CC) -c -o $@ $(CFLAGS) $(KNITRO) $<
 
 %_par.o: %.C atom.h  supercell.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h sphere_grid.h nmr.h ee.h\
-	opt.h params.h polarizability.h vector.h dlf_interface.h quasiharmonic.h $(KNITRO_INC) 
+	params.h polarizability.h vector.h dlf_interface.h quasiharmonic.h $(KNITRO_INC) 
 	 $(MPICC) -c -o $@ $(CFLAGS) $(KNITRO) $(PARALLEL) $<
 
 %.o: %.C atom.h supercell.h cluster.h constants.h dimer.h matrix.h monomer.h multipole.h sphere_grid.h nmr.h ee.h\
-	opt.h params.h polarizability.h vector.h dlf_interface.h quasiharmonic.h  $(KNITRO_INC)
+	params.h polarizability.h vector.h dlf_interface.h quasiharmonic.h  $(KNITRO_INC)
 	 $(CC) -c -o $@ $(CFLAGS) $(KNITRO) $<

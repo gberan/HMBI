@@ -1,4 +1,6 @@
-#include <iostream.h>
+#include "params.h"
+#include <iostream>
+#include <iomanip>
 #include "matrix.h"
 #include <vector>
 #include "vector.h"
@@ -85,8 +87,7 @@ void Matrix::Print(string title) {
   printf("%s    ROWS = %d     COLUMNS = %d\n", title.c_str(), rows, cols); //what is title.c_str()??
   for (int x=0;x<rows;x++) {
     for (int y=0;y<cols;y++) {
-      printf("%8.5f ",Element(x,y));
-      //printf("%5.2f ",Element(x,y));
+      printf("%.9f ",Element(x,y));
     }
     printf("\n"); 
   }
@@ -243,7 +244,7 @@ Vector Matrix::Diagonalize() {
 
 // Perform singular value decomposition, A = U*SIGMA*V'.  
 // Returns vector of singular values, and also U and V(transpose).
-Vector Matrix::SVD(Matrix &U, Matrix &VT, bool find_condition) {
+Vector Matrix::SVD(Matrix &U, Matrix &VT) {
 
   char job = 'A';
   int dim = min(rows,cols);
@@ -286,14 +287,38 @@ Vector Matrix::SVD(Matrix &U, Matrix &VT, bool find_condition) {
     exit(1);
   }
   
-
-  if ( find_condition ) {
-    double cond = sigma[0]/sigma[dim-1];
-    printf("Condition number = %f\n",cond);
-  }
-
   delete [] work;
   return sigma;
+}
+
+//Compute the determinant of a matrix, overwrites input matrix by the LU decomposition
+double Matrix::Determinant(){
+
+    if (rows != cols) {
+	printf("ERROR: Matrix::Determinant()- matrix must be square. rows = %d, cols = %d\n",rows,cols);
+        exit(1);
+    }
+    int N = rows;
+    int info;
+    double *ipiv = new double[N]; 
+
+    //finds the LU decomposition of matrix
+    //the matrix is overwritten
+    dgetrf_(&N, &N, matrix, &N, ipiv, &info); 
+
+    if (info < 0) {
+      printf("ERROR: Matrix::Determinant() - LU decomposition failed.  DGETRF Info = %d\n",info);
+      exit(1);
+    }  
+
+    //the determinant is the product of the diagonal of the LU decomposition
+    double det = Element(0,0);
+    for(int i=1;i<N;i++){
+         det *= Element(i,i);
+    }
+
+    delete [] ipiv;
+    return det;
 }
 
 // Compute inverse of a square matrix, overwrites input matrix
@@ -332,11 +357,12 @@ void Matrix::Inverse() {
     printf("ERROR: Matrix::Inverse() - Inversion failed.  DGETRI Info = %d\n",info);
     exit(1);
   }
-  
+
   delete [] ipiv;
   delete [] work;
 
 }
+
 
 // Solve A*x=b using LU decomposition.  Assume a single
 // right-hand-side vector b.  Returns the vector x.
@@ -344,7 +370,7 @@ void Matrix::SolveLinearEquations(Vector &b) {
   int info;
   int NRHS = 1; // only one right-hand side (single b vector)
   int N = rows; // Number of linear equations = # of rows of the matrix
-  int *ipiv = new int[N]; // The pivot indices that define the
+  int *ipiv = new int[N+1]; // The pivot indices that define the
 			  // permutation matrix P;
 
   // Check dimensions: This routine requires a square matrix A, and cols(A) = rows(b).
@@ -357,6 +383,9 @@ void Matrix::SolveLinearEquations(Vector &b) {
     exit(1);
   }
   
+  printf("N = %d\n", N);
+
+
   // Call LAPACK to do the real work
   dgesv_(&N, &NRHS, matrix, &rows, ipiv, b.GetVectorPtr(), &rows, &info);
 
@@ -367,6 +396,7 @@ void Matrix::SolveLinearEquations(Vector &b) {
 
   delete [] ipiv;
 }
+
 
 // Solve A*x=b using LU decomposition, expert version.  Includes
 // iterative refinement and error estimates.  Useful if the matrix is
@@ -387,7 +417,7 @@ void Matrix::ExpertSolveLinearEquations(Vector &b) {
 
   int *IPIV = new int[N]; // The pivot indices that define the
 			  // permutation matrix P;
-
+  
   double *AF = new double[rows*cols];
   double *R = new double[N];
   double *C = new double[N];
@@ -395,7 +425,7 @@ void Matrix::ExpertSolveLinearEquations(Vector &b) {
   double *WORK = new double[4*N];
   double rcond,ferr,berr; // if NHRS > 1, ferr and berr need to be arrays
   int *IWORK = new int[N];
-
+  
 
   // Check dimensions: This routine requires a square matrix A, and cols(A) = rows(b).
   if ( rows != cols) {
@@ -438,6 +468,271 @@ void Matrix::ExpertSolveLinearEquations(Vector &b) {
 }
 
 
+
+// Expert solver with bool for Ewald code:
+void Matrix::ExpertSolveLinearEquations(Vector &b, bool* pass) {
+  int info;
+  char FACT= 'N'; // no equilibration, and A has not been factorized.
+		  // Maybe want to play with FACT='E'?
+  char TRANS = 'N'; // normal (no transpose) for A.
+  char EQUED; 
+  int N = rows; // Number of linear equations = # of rows of the matrix
+
+  int NRHS = 1; // only one right-hand side (single b vector).  Note,
+		// if we ever want to increase NRHS, be sure to look
+		// at ferr/berr allocation below.
+
+  int *IPIV = new int[N]; // The pivot indices that define the
+			  // permutation matrix P;
+  
+  double *AF = new double[rows*cols];
+  double *R = new double[N];
+  double *C = new double[N];
+  double *X = new double[N*NRHS];
+  double *WORK = new double[4*N];
+  double rcond,ferr,berr; // if NHRS > 1, ferr and berr need to be arrays
+  int *IWORK = new int[N];
+  
+
+  // Check dimensions: This routine requires a square matrix A, and cols(A) = rows(b).
+  if ( rows != cols) {
+    printf("Matrix::SolveLinearEquations() requires a square matrix: %d x %d\n",rows,cols);
+    exit(1);
+  }
+  if ( cols != b.GetLength() ) {
+    printf("Matrix::SolveLinearEquations(): Dimensions of b vector (%d) incompatible with A (%d x %d)\n",b.GetLength(),rows,cols);
+    exit(1);
+  }
+
+  // Call LAPACK to do the real work
+  dgesvx_(&FACT, &TRANS, &N, &NRHS, matrix, &N, AF, &N, IPIV, &EQUED, R, C,
+	 b.GetVectorPtr(), &N, X, &N, &rcond, &ferr, &berr, WORK, IWORK, &info);
+  
+  if (info != 0) {
+    printf("ERROR: Matrix::SolveLinearEquations(): Equation solver failed! DGESV Info = %d\n",info);
+    //exit(1);
+    *pass = false;
+  } else {
+    *pass = true;
+  }
+
+  printf("Expert Linear Equation Solver:\n");
+  printf("   Condition Number = %f\n",rcond);
+  printf("     Backward Error = %f\n",ferr);
+  printf("      Forward Error = %f\n",berr);
+
+
+  // Copy data from X to b
+  for (int i=0;i<N*NRHS;i++) {
+    b[i] = X[i];
+  }
+
+  // Free up memory
+  delete [] IPIV;
+  delete [] AF;
+  delete [] R;
+  delete [] C;
+  delete [] X;
+  delete [] WORK;
+  delete [] IWORK;
+}
+
+
+
+// Compute the the minimum-norm solution to a real linear least
+//  squares problem: minimize 2-norm(| b - A*x |)
+void Matrix::SolveLeastSquares( Vector &b ) {
+  int info;
+  int NRHS = 1; // only one right-hand side (single b vector)
+  int M = rows; // # of rows of the matrix
+  int N = cols; // # of columns of the matrix
+
+  // LDA = leading dimension of the array A
+
+  // Let's do some error checking:
+  // if ( rows != b.GetLength() ) {
+  //  printf("Matrix::LeastSquares(): Dimensions of b vector (%d) incompatible with A (%d x %d)\n",b.GetLength(),rows,cols);
+  //  exit(1);
+  //}
+  
+  // Call LAPACK to do the real work
+  //dgelsd_(int *M, int *N, int *NRHS, double *A, int *LDA, 
+  //			double *B, int *LDB, double *S, double *RCOND, 
+  			// int *RANK, double *WORK, int *LWORK, int *IWORK, 
+  			// int *INFO );
+  // is the LDA = rows of A? (what is leading dimension?)
+  //double *S = new double[min(N,M)];
+  Vector S;
+  S.Initialize(min(N,M));
+
+  //double rcond = -1;
+  double rcond= Params::Parameters().GetRcond();
+
+  int rank;
+  //The exact minimum amount of workspace needed depends on M,
+  // N and NRHS. As long as LWORK is at least
+  //     12*N + 2*N*SMLSIZ + 8*N*NLVL + N*NRHS + (SMLSIZ+1)**2,
+  // if M is greater than or equal to N or
+  //     12*M + 2*M*SMLSIZ + 8*M*NLVL + M*NRHS + (SMLSIZ+1)**2,
+  // if M is less than N, the code will execute correctly.
+  // Not sure what NLVL and SMLSIZ are so I'll just use the max of N and M for everyting:
+  // NLVL = MAX( 0, INT( LOG_2( MIN( M,N )/(SMLSIZ+1) ) ) + 1 )
+  // SMLSIZ is returned by ILAENV and is equal to the maximum size of the subproblems at the bottom of the computation
+          
+  int LWORK;
+  //  int large_dim = max(N,M);
+  //LWORK = 12*large_dim + 2 * large_dim * large_dim + 8 * large_dim * large_dim + large_dim + (large_dim+1) * (large_dim+1); // This is obviously overkill, fix this before production 
+  //  LWORK = max(N,M) * max(N,M) * max(N,M);
+
+  //printf("DEBUG initialize workspace in SolveLeastSquares\n"); fflush(stdout);
+  double *tmp = new double[N];
+  int *itmp = new int[N];
+  //int *IWORK = new int[ 3*N*max(N,M)*max(N,M) + 11 * N];
+  //int *IWORK = new int[max(N,M)*max(N,M)*max(N,M)];
+
+  //printf("Coefficient matrix: (%d x %d)\n", rows, cols); fflush(stdout);
+
+  int LDB=max(N,M);
+
+  // Find optimial value of LWORK:
+  LWORK = -1;
+  dgelsd_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S.GetVectorPtr(), &rcond, &rank, tmp, &LWORK, itmp, &info );
+  //dgelss_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S, &rcond, &rank, tmp, &LWORK, &info );
+  //printf("DEBUG after first dgelsd_ call\n"); fflush(stdout);
+
+  //  char TRANS;
+  //  TRANS = "N";
+  //  dgels_(&TRANS, &M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, tmp, &LWORK, &info );
+  int LIWORK = *(itmp + 0);
+  LWORK = *(tmp + 0);
+  //printf("SolveLeastSquares: Optimal work size: %d\n", LWORK);
+  double *WORK = new double[LWORK];
+  int *IWORK = new int[LIWORK];
+  
+
+  dgelsd_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S.GetVectorPtr(), &rcond, &rank, WORK, &LWORK, IWORK, &info );
+  //dgelss_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S, &rcond, &rank, WORK, &LWORK, &info );
+
+
+  //S.Print("Singluar Values:");
+  
+
+
+
+  if (info != 0) {
+    printf("ERROR: Matrix::SolveLeastSuares(): Equation solver failed! DGELSD Info = %d\n",info);
+    exit(1);
+  }
+
+  // Free up the memory
+  delete [] tmp;
+  delete [] itmp;
+  //delete [] S;
+  delete [] WORK;
+  delete [] IWORK;
+
+}
+
+
+// Includes logic to return an error for Ewald fitting purposes:
+//  squares problem: minimize 2-norm(| b - A*x |)
+void Matrix::SolveLeastSquares( Vector &b, bool* pass ) {
+  int info;
+  int NRHS = 1; // only one right-hand side (single b vector)
+  int M = rows; // # of rows of the matrix
+  int N = cols; // # of columns of the matrix
+
+  // LDA = leading dimension of the array A
+
+  // Let's do some error checking:
+  // if ( rows != b.GetLength() ) {
+  //  printf("Matrix::LeastSquares(): Dimensions of b vector (%d) incompatible with A (%d x %d)\n",b.GetLength(),rows,cols);
+  //  exit(1);
+  //}
+  
+  // Call LAPACK to do the real work
+  //dgelsd_(int *M, int *N, int *NRHS, double *A, int *LDA, 
+  //			double *B, int *LDB, double *S, double *RCOND, 
+  			// int *RANK, double *WORK, int *LWORK, int *IWORK, 
+  			// int *INFO );
+  // is the LDA = rows of A? (what is leading dimension?)
+  //double *S = new double[min(N,M)];
+  Vector S;
+  S.Initialize(min(N,M));
+
+  double rcond; 
+  rcond = Params::Parameters().GetRcond();
+
+  int rank;
+  //The exact minimum amount of workspace needed depends on M,
+  // N and NRHS. As long as LWORK is at least
+  //     12*N + 2*N*SMLSIZ + 8*N*NLVL + N*NRHS + (SMLSIZ+1)**2,
+  // if M is greater than or equal to N or
+  //     12*M + 2*M*SMLSIZ + 8*M*NLVL + M*NRHS + (SMLSIZ+1)**2,
+  // if M is less than N, the code will execute correctly.
+  // Not sure what NLVL and SMLSIZ are so I'll just use the max of N and M for everyting:
+  // NLVL = MAX( 0, INT( LOG_2( MIN( M,N )/(SMLSIZ+1) ) ) + 1 )
+  // SMLSIZ is returned by ILAENV and is equal to the maximum size of the subproblems at the bottom of the computation
+          
+  int LWORK;
+  //  int large_dim = max(N,M);
+  //LWORK = 12*large_dim + 2 * large_dim * large_dim + 8 * large_dim * large_dim + large_dim + (large_dim+1) * (large_dim+1); // This is obviously overkill, fix this before production 
+  //  LWORK = max(N,M) * max(N,M) * max(N,M);
+
+  //printf("DEBUG initialize workspace in SolveLeastSquares\n"); fflush(stdout);
+  double *tmp = new double[N];
+  int *itmp = new int[N];
+  //int *IWORK = new int[ 3*N*max(N,M)*max(N,M) + 11 * N];
+  //int *IWORK = new int[max(N,M)*max(N,M)*max(N,M)];
+
+  //printf("Coefficient matrix: (%d x %d)\n", rows, cols); fflush(stdout);
+
+  int LDB=max(N,M);
+
+  // Find optimial value of LWORK:
+  LWORK = -1;
+  dgelsd_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S.GetVectorPtr(), &rcond, &rank, tmp, &LWORK, itmp, &info );
+  //dgelss_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S, &rcond, &rank, tmp, &LWORK, &info );
+  //printf("DEBUG after first dgelsd_ call\n"); fflush(stdout);
+
+  //  char TRANS;
+  //  TRANS = "N";
+  //  dgels_(&TRANS, &M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, tmp, &LWORK, &info );
+  int LIWORK = *(itmp + 0);
+  LWORK = *(tmp + 0);
+  //printf("SolveLeastSquares: Optimal work size: %d\n", LWORK);
+  double *WORK = new double[LWORK];
+  int *IWORK = new int[LIWORK];
+  
+
+  dgelsd_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S.GetVectorPtr(), &rcond, &rank, WORK, &LWORK, IWORK, &info );
+  //dgelss_(&M, &N, &NRHS, matrix, &rows, b.GetVectorPtr(), &LDB, S, &rcond, &rank, WORK, &LWORK, &info );
+
+
+  //S.Print("Singluar Values:");
+  
+
+
+
+  if (info != 0) {
+    //printf("ERROR: Matrix::SolveLeastSuares(): Equation solver failed! DGELSD Info = %d\n",info);
+    *pass = false;
+    //exit(1);
+  } else {
+    *pass = true;
+  }
+
+  // Free up the memory
+  delete [] tmp;
+  delete [] itmp;
+  //delete [] S;
+  delete [] WORK;
+  delete [] IWORK;
+
+  
+}
+
+
 double Matrix::TwoNorm() {
   int dim = min(rows,cols);
   Matrix U, VT;
@@ -472,6 +767,27 @@ void Matrix::Transpose() {
   delete [] tmp;
 
 }
+
+// Take trace of a square matrix.  I decided not to allow it on
+// non-square matrices, but of course that can be changed if needed.
+double Matrix::Trace() {
+
+  // Is it square?
+  if (rows != cols) {
+    printf("ERROR: Trace function expects a square matrix.\n");
+    exit(1);
+  }
+
+  // Compute the trace
+  double trace = 0.0;
+
+  for (int i=0;i<rows;i++) {
+    trace += matrix[i*rows + i];
+  }
+  
+  return trace;
+}
+
 
 //Starting operator-overloading here-on
 
@@ -652,72 +968,6 @@ void Matrix::SetRowVector(Vector vec, int irow) {
   }
 }
 
-// row_offset and col_offset specify the matrix element for the top
-// left corner of the block matrix.  nrows and ncols specify the size
-// of the block.
-Matrix Matrix::GetBlock(int nrows, int ncols, int row_offset, int col_offset) {
-
-  // First check sizing... is the block too large?
-  if ( (nrows + row_offset > rows ) || (ncols + col_offset) > cols) {
-    printf("ERROR: Matrix::GetBlock(): Matrix block of size %d x %d from (%d,%d) is too large\n",nrows,ncols,row_offset,col_offset);
-    printf("       Your original matrix is only %d x %d.\n",rows,cols);
-    exit(1);
-  }
-
-  Matrix block(nrows,ncols);
-  for (int j=0; j<ncols;j++) {
-    for (int i=0; i<nrows;i++) {
-      block.Element(i,j) = Element(i+row_offset,j+row_offset);
-    }
-  }
-
-  return block;
-}
-
-
-// row_offset and col_offset specify the matrix element for the top
-// left corner of the block matrix
-void Matrix::SetBlock(const Matrix& block, int row_offset, int col_offset) {
-
-  // First check sizing... will the block fit?
-  if ( (block.rows + row_offset > rows ) || (block.cols + col_offset) > cols) {
-    printf("ERROR: Matrix::SetBlock(): Matrix block of size %d x %d will not fit at (%d,%d)\n",block.rows,block.cols,row_offset,col_offset);
-    printf("       Your target matrix is only %d x %d.\n",rows,cols);
-    exit(1);
-  }
-
-
-  // Now set elements in the target matrix using those in the block
-  for (int j=0; j<block.cols;j++) {
-    for (int i=0; i<block.rows;i++) {
-      Element(i+row_offset,j+col_offset) = block(i,j);
-    }
-  }
-
-}
-
-// row_offset and col_offset specify the matrix element for the top
-// left corner of the block matrix
-void Matrix::AddBlockToMatrix(const Matrix& block, int row_offset, int col_offset) {
-
-  // First check sizing... will the block fit?
-  if ( (block.rows + row_offset > rows ) || (block.cols + col_offset) > cols) {
-    printf("ERROR: Matrix::AddBlocktoMatrix(): Matrix block of size %d x %d will not fit at (%d,%d)\n",block.rows,block.cols,row_offset,col_offset);
-    printf("       Your target matrix is only %d x %d.\n",rows,cols);
-    exit(1);
-  }
-
-
-  // Now set elements in the target matrix using those in the block
-  for (int j=0; j<block.cols;j++) {
-    for (int i=0; i<block.rows;i++) {
-      Element(i+row_offset,j+col_offset) += block(i,j);
-    }
-  }
-
-}
-
-
 void Matrix::ReorderRows(int i, int j) {
 
   Vector tmp(GetRowVector(i)); // back up row i
@@ -731,5 +981,132 @@ void Matrix::ReorderColumns(int i, int j) {
   Vector tmp(GetColumnVector(i)); // back up column i
   SetColumnVector(GetColumnVector(j),i); // move column j to column i
   SetColumnVector(tmp,j); // put old column i in column j
+
+}
+
+void Matrix::SortEigenValuesAndVectors( Vector ofEigenValues) {   
+  
+  // Create a copy;
+  Vector tmp( ofEigenValues ),  tmp2( ofEigenValues );
+  Vector extracolumn( rows );
+  double max;
+  int jmax;
+
+  // Begin sorting the frequencies and columns of ofEigenVectors side by side
+  for (int i=0;i<ofEigenValues.GetLength();i++) {
+    max = -9999999.0;
+    jmax = -1;
+    for (int j=0;j<ofEigenValues.GetLength();j++) {
+      if (tmp[j] > max) {   
+        max = tmp[j];
+        jmax = j;
+   
+        for (int k=0;k<ofEigenValues.GetLength();k++) {
+
+          extracolumn[k] = matrix[k*cols+j];
+          matrix[k*cols+j] = matrix[k*cols+i];
+        }
+      }
+    }
+    tmp2[i] = max;         
+    tmp[jmax] = -9999999.0;
+    for (int k=0;k<ofEigenValues.GetLength();k++) {   
+      matrix[k*cols+i] = extracolumn[k];
+    }
+  }                 
+
+}
+
+void Matrix::PrintHessian(string title) {
+
+//  int dim = hess.GetRows();    
+//  cout << "dim = " << dim <<"\n";
+  printf("%s\n",title.c_str());
+  for (int i=0;i<(cols-cols%9)/9;i++) {
+    for (int j1=0;j1<1;j1++) {
+      cout << "  \t";
+      for (int k1=9*i;k1<9*i+9;k1++) {
+        cout <<  setprecision(9) << showpoint << fixed << right << setw(15)<< k1 << "\t";
+      }
+    cout << "\n";
+    }
+    for (int j=0;j<rows;j++) {
+      cout << j << "\t";
+      for (int k=9*i;k<9*i+9;k++) {
+ 	cout <<  setprecision(9) << showpoint << fixed << right << setw(15)<< Element(j,k) << "\t";
+      }
+    cout << "\n";
+    }
+  }
+  if (cols%9 != 0) {              
+    for (int j1=0;j1<1;j1++) {
+      cout << "  \t";
+      for (int k1=(cols-cols%9);k1<cols;k1++) {
+        cout <<  setprecision(9) << showpoint << fixed << right << setw(15)<< k1 << "\t";
+      }
+    cout << "\n";
+    }
+    for (int j=0;j<rows;j++) {                
+      cout << j << "\t";
+      for (int k=(cols-cols%9);k<cols;k++) {
+        cout <<  setprecision(9) << showpoint << fixed << right << setw(15)<< Element(j,k) << "\t";
+      }                            
+    cout << "\n";          
+    }
+  }
+
+}
+
+Matrix Matrix::BuildMatrixFromBlocks(Matrix& other) {
+
+  //this builds a new matrix from blocks which need not necessarily be square
+
+  Matrix FromBlocks(rows+other.rows, cols+other.cols);
+
+  for (int k=0;k<(cols+other.cols);k++) {
+    Vector tmp(rows+other.rows);
+
+    if (k<cols) {
+      for (int i=0; i<(rows+other.rows);i++) {
+        if (i < rows) {
+          tmp[i] = Element(i,k);
+        }
+        else {
+          tmp[i] = 0.0;
+        }
+      }
+    }
+
+    if (k>=cols) {
+      for (int i=0; i<(rows+other.rows);i++) {
+        if (i < rows) {
+          tmp[i] = 0.0;
+       	}
+       	else {
+       	  tmp[i] = other.Element(i-rows,k-cols);
+       	}
+      }
+    }
+
+    FromBlocks.SetColumnVector(tmp,k);
+  }
+
+  return FromBlocks;
+}
+
+//stacks columns of matrix into a single vector
+Vector Matrix::StackColumnsOfMatrix(){
+
+  Vector vec;
+  vec.Initialize(rows*cols);
+  int vec_element = 0;
+
+  for(int i=0;i<cols;i++)
+    for(int j=0;j<rows;j++){
+      vec[vec_element] = Element(j,i);
+      vec_element++;
+    }
+
+  return vec;
 
 }
