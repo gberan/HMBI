@@ -27,16 +27,15 @@
 !! Equation numbers refer to this paper.
 !!
 !! DATA
-!!  $Date: 2010-05-07 19:30:43 $
-!!  $Rev: 307 $
-!!  $Author: gberan $
-!!  $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_conint.f90 $
-!!  $Id: dlf_conint.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!!  $Date: 2013-06-04 16:19:44 +0100 (Tue, 04 Jun 2013) $
+!!  $Rev: 523 $
+!!  $Author: twk $
+!!  $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_conint.f90 $
+!!  $Id: dlf_conint.f90 523 2013-06-04 15:19:44Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Tom Keal (keal@mpi-muelheim.mpg.de),
-!!  Johannes Kaestner (j.kaestner@dl.ac.uk)
+!!  Copyright 2007 Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -125,6 +124,10 @@ subroutine dlf_conint_check_consistency
      if (glob%iopt == 30 .or. glob%iopt == 40) call dlf_fail("The &
           &selected optimiser is not compatible with the penalty & 
           &function method")
+     if (glob%nzero /= 0) call dlf_fail("Soft mode skipping with &
+          &nzero is not compatible with the penalty function method")
+     if (glob%imicroiter > 0) call dlf_fail("Microiterative &
+          &conical intersection search is not yet implemented")
   case (2)
      ! Gradient projection checks
      if (glob%icoord > 9) call dlf_fail("A standard coordinate system &
@@ -134,6 +137,10 @@ subroutine dlf_conint_check_consistency
           &projection method")
      if (glob%iline == 1) call dlf_fail("Energy-based trust radius &
           &not possible with the gradient projection method")
+     if (glob%nzero /= 0) call dlf_fail("Soft mode skipping with &
+          &nzero is not compatible with the gradient projection method")
+     if (glob%imicroiter > 0) call dlf_fail("Microiterative &
+          &conical intersection search is not yet implemented")
   case (3)
      ! Lagrange-Newton checks
      if (glob%iopt /= 40) call dlf_fail("The Lagrange-Newton optimiser &
@@ -143,6 +150,10 @@ subroutine dlf_conint_check_consistency
           &Lagrange-Newton method")
      if (glob%inithessian == 0) call dlf_fail("The Hessian for the &
           &Lagrange-Newton method cannot be calculated externally")
+     if (glob%nzero /= 0) call dlf_fail("Soft mode skipping with &
+          &nzero is not supported with the Lagrange-Newton method")   
+     if (glob%imicroiter > 0) call dlf_fail("Microiterative &
+          &conical intersection search is not yet implemented")  
   case default
     write(stderr, '(a,i4,a)') &
          "Multistate calculation", glob%imultistate, "not implemented"
@@ -315,7 +326,7 @@ subroutine dlf_make_gp_gradient
 
 ! Normalise the gradient difference (but avoid division by zero).
   normGradDiff = sqrt(ddot(i3nat, gradDiff, 1, gradDiff, 1))
-  if (normGradDiff > tiny) gradDiff = (1 / normGradDiff) * gradDiff
+  if (normGradDiff > tiny) gradDiff = (1.D0 / normGradDiff) * gradDiff
 
 ! Now we can calculate f1 (Eq. 5)
 ! Note again the sign of the energy difference is consistent with the 
@@ -331,7 +342,7 @@ subroutine dlf_make_gp_gradient
 ! Normalise
   normCoupling = sqrt(ddot(i3nat, tildeCoupling, 1, tildeCoupling, 1))
   if (normCoupling > tiny) &
-       tildeCoupling = (1 / normCoupling) * tildeCoupling
+       tildeCoupling = (1.D0 / normCoupling) * tildeCoupling
 
 ! The gradient difference and coupling vectors are now orthonormal, 
 ! so we can calculate the projected gradient
@@ -355,7 +366,7 @@ subroutine dlf_make_gp_gradient
 ! Now form the gradient for the optimiser (Eq. 8)
 ! g = c3*[c4*f1 + (1-c4)*f2]
   glob%xgradient = glob%gp_c3 * ((glob%gp_c4 * f1) + &
-                                 ((1 - glob%gp_c4) * f2))
+                                 ((1.D0 - glob%gp_c4) * f2))
 
 ! Warning (when comparing the MNDO and DL-FIND implementations)...
 ! The orthonormalisation procedure when carried out in ChemShell units
@@ -525,7 +536,7 @@ subroutine dlf_ln_xtoi
   implicit none
   integer :: ivar
 
-  call dlf_direct_xtoi(glob%nvar, glob%nivar - 2, glob%xcoords, &
+  call dlf_direct_xtoi(glob%nvar, glob%nivar - 2, glob%nicore, glob%xcoords, &
        conint%xGradMean, glob%icoords(1:glob%nivar - 2), &
        conint%iGradMean)
   ! The following is a hack to transform the gradient
@@ -533,10 +544,10 @@ subroutine dlf_ln_xtoi
   ! to internals.
   ! Unfortunately coordinate and gradient transformation routines are 
   ! not separate, so we transform the same coordinates three times...
-  call dlf_direct_xtoi(glob%nvar, glob%nivar - 2, glob%xcoords, &
+  call dlf_direct_xtoi(glob%nvar, glob%nivar - 2, glob%nicore, glob%xcoords, &
        conint%xGradDiff, glob%icoords(1:glob%nivar - 2), &
        conint%iGradDiff)
-  call dlf_direct_xtoi(glob%nvar, glob%nivar - 2, glob%xcoords, &
+  call dlf_direct_xtoi(glob%nvar, glob%nivar - 2, glob%nicore, glob%xcoords, &
        glob%mscoupling, glob%icoords(1:glob%nivar - 2), &
        conint%iCoupling)
 
@@ -875,7 +886,7 @@ subroutine dlf_conint_make_ln_hess(trerun_energy,tconv)
   use dlf_global, only: glob,stdout,printl
   use dlf_stat, only: stat
   use dlf_conint, only: conint 
-  use dlf_hessian
+  use dlf_hessian, only: oldc,fd_hess_running
   implicit none
   logical, intent(inout) :: trerun_energy
   logical, intent(inout) :: tconv
@@ -888,6 +899,7 @@ subroutine dlf_conint_make_ln_hess(trerun_energy,tconv)
   ! Gradients for Hessian update
   real(rk) :: updGradient(glob%nivar - 2)
   real(rk) :: updGradientOld(glob%nivar - 2)
+  logical  :: was_updated
 ! **********************************************************************
   ! lnnivar is the dimension of the optimisation problem without the
   ! constraints. All Hessian construction, updating etc. should only
@@ -913,7 +925,7 @@ subroutine dlf_conint_make_ln_hess(trerun_energy,tconv)
   call dlf_hessian_update(lnnivar, glob%icoords(1:lnnivar), & 
        oldc(1:lnnivar), updGradient, updGradientOld, &
        glob%ihessian(1:lnnivar, 1:lnnivar), glob%havehessian, &
-       fracrecalc)
+       fracrecalc,was_updated)
   
   if(glob%havehessian) then
        ! Fill in the last two rows/columns of the hessian

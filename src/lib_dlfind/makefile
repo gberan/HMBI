@@ -1,7 +1,7 @@
 # COPYRIGHT
 #
-#  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-#  Tom Keal (keal@mpi-muelheim.mpg.de)
+#  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+#  Tom Keal (thomas.keal@stfc.ac.uk)
 #
 #  This file is part of DL-FIND.
 #
@@ -30,12 +30,6 @@ ALLOC = new
 OBJDIR = .
 PARA = $(MAKECMDGOALS)
 
-
-AR = ar
-ARFLAGS = rsuv
-
-
-
 ########################################################################
 ##  Protland compiler
 ifeq ($(arch),pg)
@@ -51,6 +45,7 @@ ifeq ($(arch),pg)
   F90EXT     = F95
   ALLOC      = old
 endif
+# with -lacml this works on HECToR
 
 ########################################################################
 ##  g95 compiler
@@ -58,7 +53,7 @@ ifeq ($(arch),g95)
   F90        = g95
   F90FLAGS   =  -C 
   F90FLAGS   =  -C -ftrace=full -freal=nan -finteger=nan -flogical=none \
-                -fpointer=none -fimplicit-none  -fbounds-check \
+                -fpointer=none -fimplicit-none   \
                 -fintrinsic-extensions -std=f95 -ftr15581 -Wuninitialized \
                 -Wprecision-loss -fmod=$(OBJDIR) 
 #\
@@ -69,13 +64,19 @@ ifeq ($(arch),g95)
 #  LDFLAGS    = -L/home/jkk/lib/ATLAS/Linux_HAMMER64SSE2_2/lib \
 #                -lm -llapack -lcblas -lf77blas -latlas -lg2c
 # works on jk37vig
-  LDFLAGS    = -L/home/jkk/lib/ATLAS/LINUX_jk37vig_g95/ATLAS/lib/Linux_P4SSE2 \
-                -lm -llapack -lcblas -lf77blas -latlas -lg2c
-# Laptop
-#  LDFLAGS    = -L/home/kaestner/programs/chemshell/chemsh_061006/lib \
-#                -lm -llapack -lblas
+#  LDFLAGS    = -L/home/linux8_i1/kaestner/scr/lib/atlas_SRCdir/ATLAS3.8.2/linux8/lib \
+                -lm -llapack -lcblas -lf77blas -latlas 
+# Netlib blas and lapack - http://www.netlib.org/lapack/lapack.tgz
+#  LDFLAGS    = -L/home/linux8_i1/kaestner/scr/lib/LAPACK/lapack-3.2 \
+#                -lm -llapack_LINUX -lblas_LINUX 
+# Laptop, ChemShell Lapack
+  LDFLAGS    = -L/Users/kaestner/ChemShell/chemsh_3.2_svn/lib \
+                -lm -llapack -lblas
+# Stuttgart desktop
+  LDFLAGS    = -L/home/linux8_i1/kaestner/chemshell/chemsh_3.2_svn/lib \
+                -lm -llapack -lblas
   F90EXT     = F90
-# the next line may be used to fine memory leaks
+# the next line may be used to find memory leaks
 #  ALLOC      = old
 endif
 ########################################################################
@@ -84,12 +85,14 @@ endif
 ##  Intel compiler
 ifeq ($(arch),intel)
   F90        = ifort 
-  #F90FLAGS   =  -g -C -traceback -module $(OBJDIR)
-  F90FLAGS   =  -traceback -module $(OBJDIR)
+  F90FLAGS   =  -C -ftrapuv -traceback -check noarg_temp_created -module $(OBJDIR)
   # fast
   #F90FLAGS   =  -O -p -module $(OBJDIR)
   #sigsegv
-  LDFLAGS    = -L/opt/intel/mkl/9.1.023/lib/em64t -lguide -lmkl_lapack -lmkl_em64t -lpthread
+#  LDFLAGS    = -L/home/jkk/users/chemshell/chemsh_3.1b1_intel/lib -llapack -lblas
+#  LDFLAGS    = -L/opt/intel/mkl701/lib/em64t -lguide -lmkl_lapack -lmkl_ia32
+  # jk37vig, dynamic linking
+  LDFLAGS    = -L/opt/intel/compilers_and_libraries_2016.3.210/linux/compiler/lib/intel64 -limf -lifcore -liomp5 -lintlc -L/opt/intel/mkl/lib/intel64 -lmkl_core -lmkl_lapack95_lp64 -lmkl_blas95_lp64 -lmkl_intel_lp64 -lmkl_intel_thread
   F90EXT     = F90
 endif
 ########################################################################
@@ -101,11 +104,11 @@ endif
 ifeq ($(arch),gfortran)
   F90        = gfortran
   F90FLAGS   =  -C -M $(OBJDIR)
-  F90FLAGS   =   -fimplicit-none  -fbounds-check -std=gnu -Wconversion \
+  F90FLAGS   =   -fimplicit-none   -std=gnu -Wconversion \
 	           -Wsurprising -M $(OBJDIR)
 #  LDFLAGS    = -L/home/jkk/lib/ATLAS/Linux_HAMMER64SSE2_2/lib \
 #                -lm -llapack -lcblas -lf77blas -latlas -lg2c
-  LDFLAGS    = -L/home/jkk/lib/ATLAS/LINUX_jk37vig_g95/ATLAS/lib/Linux_P4SSE2 \
+  LDFLAGS    = -L/opt/ohpc/pub/compiler/gcc/5.3.0/lib64 \
                 -lm -llapack -lcblas -lf77blas -latlas -lg2c
   F90EXT     = F90
 endif
@@ -118,12 +121,12 @@ endif
 OBJ_MOD = $(OBJDIR)/dlf_stat_module.o $(OBJDIR)/dlf_global_module.o $(OBJDIR)/dlf_allocate.o $(OBJDIR)/dlf_util.o \
 	$(OBJDIR)/dlf_sort.o
 
-# Objects that work without numerical libraries 
+# Objects that work without numerical libraries (this distinction does not hold any more) 
 OBJ_NOLAPACK = $(OBJDIR)/dl-find.o $(OBJDIR)/dlf_convergence.o $(OBJDIR)/dlf_checkpoint.o $(OBJDIR)/dlf_svnversion.o\
          $(OBJDIR)/dlf_formstep.o $(OBJDIR)/dlf_scalestep.o \
        $(OBJDIR)/dlf_lbfgs.o $(OBJDIR)/dlf_time.o \
-       $(OBJDIR)/dlf_task.o $(OBJDIR)/dlf_neb.o $(OBJDIR)/dlf_dimer.o $(OBJDIR)/dlf_conint.o $(OBJDIR)/dlf_coords.o \
-       $(OBJDIR)/dlf_parallel_opt.o
+       $(OBJDIR)/dlf_task.o $(OBJDIR)/dlf_neb.o $(OBJDIR)/dlf_qts.o $(OBJDIR)/dlf_dimer.o $(OBJDIR)/dlf_conint.o $(OBJDIR)/dlf_coords.o \
+       $(OBJDIR)/dlf_parallel_opt.o $(OBJDIR)/dlf_microiter.o
 
 # Objects that need LAPACK linked in
 OBJ_LAPACK = $(OBJDIR)/dlf_hdlc_matrixlib.o $(OBJDIR)/dlf_hdlc_primitive.o $(OBJDIR)/dlf_hdlc_constraint.o \
@@ -131,7 +134,6 @@ OBJ_LAPACK = $(OBJDIR)/dlf_hdlc_matrixlib.o $(OBJDIR)/dlf_hdlc_primitive.o $(OBJ
 
 OBJ =  $(OBJ_NOLAPACK) $(OBJ_LAPACK) 
 
-# Default target:
 find_library: $(OBJ_MOD) $(OBJ) $(OBJDIR)/main.o $(OBJDIR)/dlf_serial.o
 	echo "Creating DL-FIND library file..."
 	$(AR) $(ARFLAGS) ../lib_dlfind.a $(OBJDIR)/*.o
@@ -232,7 +234,7 @@ $(OBJDIR)/dlf_stat_module.o $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_parameter_modul
 $(OBJDIR)/dlf_global_module.o $(OBJDIR)/dlf_global.mod: $(OBJDIR)/dlf_parameter_module.mod dlf_global_module.f90
 $(OBJDIR)/dlf_allocate.o $(OBJDIR)/dlf_allocate.mod: $(OBJDIR)/dlf_parameter_module.mod dlf_allocate.f90
 $(OBJDIR)/dlf_util.o $(OBJDIR)/dlf_store.mod $(OBJDIR)/bspline.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_parameter_module.mod dlf_util.f90
-$(OBJDIR)/dl-find.o: $(OBJDIR)/dlf_store.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dl-find.f90
+$(OBJDIR)/dl-find.o: $(OBJDIR)/dlf_store.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod $(OBJDIR)/dlf_hessian.mod dl-find.f90
 $(OBJDIR)/dlf_convergence.o $(OBJDIR)/dlf_convergence.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_convergence.f90
 $(OBJDIR)/dlf_checkpoint.o $(OBJDIR)/dlf_checkpoint.mod: $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_parameter_module.mod $(OBJDIR)/dlf_global.mod dlf_checkpoint.f90
 $(OBJDIR)/dlf_svnversion.o: dlf_svnversion.f90
@@ -242,6 +244,7 @@ $(OBJDIR)/dlf_lbfgs.o $(OBJDIR)/lbfgs_module.mod: $(OBJDIR)/dlf_checkpoint.mod $
 $(OBJDIR)/dlf_time.o $(OBJDIR)/dlf_time.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_time.f90
 $(OBJDIR)/dlf_task.o $(OBJDIR)/dlf_task_module.mod: $(OBJDIR)/dlf_store.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_task.f90
 $(OBJDIR)/dlf_neb.o $(OBJDIR)/dlf_neb.mod: $(OBJDIR)/dlf_checkpoint.mod $(OBJDIR)/dlf_stat.mod $(OBJDIR)/bspline.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_neb.f90
+$(OBJDIR)/dlf_qts.o $(OBJDIR)/dlf_qts.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_neb.mod $(OBJDIR)/dlf_parameter_module.mod dlf_qts.f90
 $(OBJDIR)/dlf_dimer.o $(OBJDIR)/dlf_dimer.mod: $(OBJDIR)/dlf_checkpoint.mod $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_dimer.f90
 $(OBJDIR)/dlf_conint.o $(OBJDIR)/dlf_conint.mod: $(OBJDIR)/dlf_checkpoint.mod $(OBJDIR)/dlf_hessian.mod $(OBJDIR)/dlf_stat.mod $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_conint.f90
 $(OBJDIR)/dlf_coords.o: $(OBJDIR)/dlf_allocate.mod $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_coords.f90
@@ -255,17 +258,10 @@ $(OBJDIR)/dlf_parallel_opt.o: $(OBJDIR)/dlf_sort_module.mod $(OBJDIR)/dlf_checkp
 $(OBJDIR)/dlf_sort.o $(OBJDIR)/dlf_sort_module.mod: $(OBJDIR)/dlf_parameter_module.mod dlf_sort.f90
 $(OBJDIR)/dlf_serial.o: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_serial.f90
 $(OBJDIR)/dlf_mpi.o $(OBJDIR)/dlf_mpi_module.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_mpi.f90
+$(OBJDIR)/dlf_microiter.o $(OBJDIR)/dlf_microiter.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod dlf_microiter.f90
 $(OBJDIR)/main.o $(OBJDIR)/driver_module.mod: $(OBJDIR)/dlf_global.mod $(OBJDIR)/dlf_parameter_module.mod main.f90
-
 
 # They might look like:
 #dlf_linalg.o: dlfhdlc_matrixlib.mod dlf_parameter_module.mod dlf_linalg.f90
 #main.o driver_module.mod: dlf_parameter_module.mod main.f90
 #$(OBJDIR)/main.o $(OBJDIR)/driver_module.mod: $(OBJDIR)/dlf_parameter_module.mod main.f90
-
-
-# GJB code for making archive file:  This doesn't get used right now
-#(%.o).a: 
-#	echo "Hello GJB"
-#	$(AR) $(ARFLAGS) $@ $(OBJDIR)/*.o
-	

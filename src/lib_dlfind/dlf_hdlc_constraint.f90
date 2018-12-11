@@ -1,7 +1,7 @@
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de), Alex Turner, Salomon Billeter,
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk), Alex Turner, Salomon Billeter,
 !!  Stephan Thiel, Max-Planck Institut fuer Kohlenforshung, Muelheim, 
 !!  Germany.
 !!
@@ -107,6 +107,89 @@ MODULE dlfhdlc_constraint
 !------------------------------------------------------------------------------
 
 CONTAINS
+
+!------------------------------------------------------------------------------
+! subroutine get_cons_regions
+!
+! Arguments:
+! nconstr:           number of constraints provided (in)
+! iconstr(4,ncnstr): constraints as read in, format a (in)
+! nat:               number of atoms (in)
+! spec(nat):         residue/frozen atom specification (in)
+! micspec(nat):      microiterative specification (in)
+! nincons:           number of constraints in inner region (out) 
+! noutcons:          number of constraints in outer region (out)
+!
+! Description: determine whether constraints apply to the inner or outer 
+!              microiterative region for the purpose of counting the number
+!              of internal coordinates in each region.
+!              Also checks that no constraints have been set on frozen atoms
+!------------------------------------------------------------------------------
+
+  subroutine get_cons_regions(nconstr, iconstr, nat, spec, micspec, nincons, noutcons)
+    ! arguments
+    integer, intent(in) :: nconstr
+    integer, dimension (5,nconstr), intent(in) :: iconstr ! type, atom1, atom2, atom3, atom4
+    integer, intent(in) :: nat
+    integer, intent(in) :: spec(nat)
+    integer, intent(in) :: micspec(nat)
+    integer, intent(out):: nincons
+    integer, intent(out):: noutcons
+    ! local vars
+    integer :: kc, ncat, i, icat, iregion
+
+    nincons = 0
+    noutcons = 0
+
+    do kc = 1, nconstr
+       ! determine number of atoms to check
+       select case (iconstr(1,kc))
+       case (1)
+          ncat = 2 ! Bond
+       case (2)
+          ncat = 3 ! Angle
+       case (3)
+          ncat = 4 ! Torsion
+       case (4) 
+          ncat = 1 ! Cartesian
+       case (5)
+          ncat = 3 ! Bond difference
+       case default
+          WRITE (stdout,'(A,I5,A,I5,A)') 'Constraint ', kc, ' type ', iconstr(1,kc), &
+               ' not recognised!'
+          CALL hdlc_errflag('Constraints error','stop')
+       end select
+
+       ! Determine whether constraint is in inner or outer region
+       iregion = -1
+       do i = 2, ncat + 1
+          icat = iconstr(i,kc)
+          if (spec(icat) == -1) then
+             write(stdout,'(A,I5,A,I5)') 'Constraint ', kc, ' includes frozen atom ', icat
+             write(stdout,'(A,5I5)') 'iconstr=', iconstr(1:5,kc)
+             call hdlc_errflag('Constraints error','stop')
+          end if
+          if (iregion == -1) then
+             iregion = micspec(icat)
+          else if (iregion /= micspec(icat)) then
+             write(stdout,'(A,I5,A)') 'Constraint ', kc, ' crosses inner/outer boundary!'
+             write(stdout,'(A,5I5)') 'iconstr=', iconstr(1:5,kc)
+             call hdlc_errflag('Constraints error','stop')
+          end if
+       end do
+
+       if (iregion == 1) then
+          nincons = nincons + 1
+       else if (iregion == 0) then
+          noutcons = noutcons + 1
+       else
+          write(stdout,'(A,I5,A,I5)') 'Constraint ', kc, ' iregion=', iregion
+          write(stdout,'(A,5I5)') 'iconstr=', iconstr(1:5,kc)          
+          call hdlc_errflag('Constraints error','stop')
+       end if
+    end do
+     
+   end subroutine get_cons_regions
 
 !------------------------------------------------------------------------------
 ! subroutine assign_cons

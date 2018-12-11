@@ -1,6 +1,6 @@
 ! **********************************************************************
 ! **                                                                  **
-! **                Task assignment and management                   **
+! **                Task assignment and management                    **
 ! **                                                                  **
 ! **********************************************************************
 !!****h* main/task
@@ -13,16 +13,16 @@
 !! optimisation loop)
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $                   
-!! $Rev: 408 $                                                              
-!! $Author: gberan $                                                         
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_task.f90 $   
-!! $Id: dlf_task.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $                      
+!! $Date: 2011-01-20 13:43:17 +0000 (Thu, 20 Jan 2011) $                   
+!! $Rev: 465 $                                                              
+!! $Author: twk $                                                         
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_task.f90 $   
+!! $Id: dlf_task.f90 465 2011-01-20 13:43:17Z twk $                      
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!

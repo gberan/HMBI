@@ -1,4 +1,4 @@
 subroutine dlf_svnversion(iver)
   character(*) :: iver
-  iver="exported"
+  iver="Unversioned directory"
 end subroutine dlf_svnversion

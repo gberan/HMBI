@@ -57,16 +57,16 @@
 !!**********************************************************************
 
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Rev: 301 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_lbfgs.f90 $
-!! $Id: dlf_lbfgs.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2013-08-07 14:08:09 +0100 (Wed, 07 Aug 2013) $
+!! $Rev: 529 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_lbfgs.f90 $
+!! $Id: dlf_lbfgs.f90 529 2013-08-07 13:08:09Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -97,6 +97,10 @@ MODULE LBFGS_MODULE
     REAL(RK), ALLOCATABLE   :: alpha(:)  ! M WORK N+M+1 - N+2M
     REAL(RK), ALLOCATABLE   :: step(:,:) ! M,N WORK N+2M+1 - N+2M+NM
     REAL(RK), ALLOCATABLE   :: dgrad(:,:)! M,N WORK N+2M+NM+1 - N+2M+2NM
+    logical                 :: tprecon ! is precon set (and allocated)?
+    real(rk), allocatable   :: precon(:,:) ! (N,N) guess for the initial inverse hessian
+                                ! full matrix, not just the diagonal. If this is used,
+                                ! the algorithm gets order N^2 !
     
     integer                 :: point ! CURRENT POSITION IN THE WORK ARRAY
     INTEGER                 :: iter ! number of iteration
@@ -153,7 +157,7 @@ SUBROUTINE dlf_lbfgs_step(x,g,step_)
     lbfgs%iter=1
     ! if the fist step should be smaller, include a factor here 
     step_(:) = -g(:)*0.02D0/dsqrt(sum(g**2))
-    
+
     ! Store old gradient and coordinates
     lbfgs%store(:) = g(:)
     lbfgs%store2(:)= x(:)
@@ -186,7 +190,8 @@ SUBROUTINE dlf_lbfgs_step(x,g,step_)
   IF ( lbfgs%iter>lbfgs%m ) bound = lbfgs%m
   ys = DDOT(lbfgs%n,lbfgs%dgrad(oldpoint,:),1,lbfgs%step(oldpoint,:),1)
   yy = DDOT(lbfgs%n,lbfgs%dgrad(oldpoint,:),1,lbfgs%dgrad(oldpoint,:),1)
-  diag(:) = ys/yy
+  diag(:) = ys/yy ! default guess for diag
+  !print*,"JK precon scale factor:",ys/yy
 
   if(dbg) print*,"Before 200: ys,yy",ys,yy
 
@@ -214,7 +219,17 @@ SUBROUTINE dlf_lbfgs_step(x,g,step_)
   if(dbg) print*,"removed DAXPY"
   if(dbg) print*,"AFTER CALL TO DAXPY"
   !
-  lbfgs%store(:) = diag(:)*lbfgs%store(:)
+  if(lbfgs%tprecon) then
+    ! diag= lbfgs%precon * lbfgs%store manually :-(
+    do ivar=1,lbfgs%n
+      diag(ivar)=sum(lbfgs%precon(:,ivar)*lbfgs%store(:))
+    end do
+    !diag = matmul(lbfgs%precon,lbfgs%store)
+    lbfgs%store(:) = diag !* ys/yy
+    !lbfgs%store(:) = lbfgs%store(:)*ys/yy
+  else
+    lbfgs%store(:) = diag(:)*lbfgs%store(:) 
+  end if
   !
   DO i = 1 , bound
     if(dbg) print*,"cp",cp
@@ -483,6 +498,7 @@ subroutine dlf_lbfgs_init(nvar,nmem)
   if(dbg) print*,"Allocating ",trim(lbfgs%tag)
   lbfgs%n=nvar
   lbfgs%m=nmem
+  lbfgs%tprecon=.false.
   if(lbfgs%n<=0) call dlf_fail("nvar in L-BFGS has to be > 0")
   if(lbfgs%m<=0) call dlf_fail("Nmem in L-BFGS has to be > 0")
 
@@ -525,7 +541,8 @@ subroutine dlf_lbfgs_destroy
   implicit none
   logical         :: allgone
   ! **********************************************************************
-  if(.not.tinit) call dlf_fail("LBFGS not initialised in dlf_lbfgs_destroy!")
+  ! Only need to deallocate if LBFGS has been initialised
+  if(.not.tinit) return
 
   !deallocate memory of the present instance
   call deallocate(lbfgs%store)
@@ -534,6 +551,9 @@ subroutine dlf_lbfgs_destroy
   call deallocate(lbfgs%alpha)
   call deallocate(lbfgs%step)
   call deallocate(lbfgs%dgrad)
+  if(lbfgs%tprecon) then
+    deallocate(lbfgs%precon)
+  end if
   lbfgs%tinit=.false.
 !print*,"Destroying ",trim(lbfgs%tag)
 
@@ -579,6 +599,38 @@ subroutine dlf_lbfgs_destroy
   end if
 
 end subroutine dlf_lbfgs_destroy
+!!****
+
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* lbfgs/dlf_lbfgs_precon
+!!
+!! FUNCTION
+!!
+!! Supply a precondition matrix, an estimate of the inverse Hessian
+!! to the module
+!! The space for the matrix is only allocated here.
+!!
+!! SYNOPSIS
+subroutine dlf_lbfgs_precon(precon)
+!! SOURCE
+  use dlf_parameter_module, only: rk
+  !use dlf_global, only: glob,stderr
+  USE lbfgs_module
+  use dlf_allocate, only: allocate
+  implicit none
+  real(rk)  ,intent(in):: precon(lbfgs%N,lbfgs%N)
+  ! **********************************************************************
+  if(.not.tinit) call dlf_fail("LBFGS not initialised in lbfgs_precon!")
+  if(.not.lbfgs%tinit) then
+    print*,"Instance of L-BFGS:",trim(lbfgs%tag)
+    call dlf_fail("This instance of LBFGS not initialised!")
+  end if
+  if(.not.lbfgs%tprecon) then
+    lbfgs%tprecon=.true.
+    call allocate(lbfgs%precon, LBFGS%N, LBFGS%N)
+  end if
+  lbfgs%precon=precon
+end subroutine dlf_lbfgs_precon
 !!****
 
 !   ----------------------------------------------------------

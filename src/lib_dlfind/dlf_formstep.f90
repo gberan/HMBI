@@ -26,16 +26,16 @@
 !!    glob%step
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Rev: 390 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_formstep.f90 $
-!! $Id: dlf_formstep.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2013-08-07 14:08:09 +0100 (Wed, 07 Aug 2013) $
+!! $Rev: 529 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_formstep.f90 $
+!! $Id: dlf_formstep.f90 529 2013-08-07 13:08:09Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -71,6 +71,8 @@ module dlf_formstep_module
   logical , save              :: tenergy     ! is energy set?
   logical , save              :: tsc_ok      ! are TS coords ok to use?
   logical , save              :: tsm_ok      ! is TS-mode ok to use?
+  ! communication to outside
+  logical , save              :: needhessian 
 end module dlf_formstep_module
 
 ! module for Optimisers using the Hessian
@@ -78,7 +80,8 @@ module dlf_hessian
   use dlf_parameter_module, only: rk
   logical ,save        :: fd_hess_running ! true if FD Hessian is currently running
                                    ! initially set F in dlf_formstep_init
-  integer ,save        :: nivar
+  integer ,save        :: nihvar   ! size of Hessian (nihvar, nihvar)
+  integer, save        :: numfd    ! number of FD Hessian eigenmodes to calculate
   integer ,save        :: iivar,direction
   real(rk),save        :: soft ! Hessian eigenvalues absolutely smaller 
                                ! than "soft" are ignored in P-RFO
@@ -93,14 +96,14 @@ module dlf_hessian
   real(rk),save        :: storeenergy
   logical ,save        :: carthessian ! should the Hessian be updated in 
                                       ! Cartesian coordinates (T) or internals (F)
-  real(rk),allocatable,save :: eigvec(:,:)  ! (nivar,nivar) Hessian eigenmodes
-  real(rk),allocatable,save :: eigval(:)    ! (nivar) Hessian eigenvalues
-  real(rk),allocatable,save :: storegrad(:) ! (nivar) old gradient in fdhessian
+  real(rk),allocatable,save :: eigvec(:,:)  ! (nihvar,nihvar) Hessian eigenmodes
+  real(rk),allocatable,save :: eigval(:)    ! (nihvar) Hessian eigenvalues
+  real(rk),allocatable,save :: storegrad(:) ! (nihvar) old gradient in fdhessian
   integer             ,save :: iupd ! actual number of Hessian updates
-  real(rk),allocatable,save :: tsvector(:) ! (nivar) Vector to follow in P-RFO
+  real(rk),allocatable,save :: tsvector(:) ! (nihvar) Vector to follow in P-RFO
   ! The old arrays are set in formstep. Used there and in hessian_update
-  real(rk),allocatable,save :: oldc(:)      ! (nivar) old i-coords
-  real(rk),allocatable,save :: oldgrad(:)   ! (nivar) old i-coords
+  real(rk),allocatable,save :: oldc(:)      ! (nihvar) old i-coords
+  real(rk),allocatable,save :: oldgrad(:)   ! (nihvar) old i-coords
   real(rk)            ,save :: minstep      ! minimum step length for Hessian update to be performed
                                        ! set in formstep_init
   logical,save              :: fracrec ! recalculate a fraction of the hessian?
@@ -130,10 +133,11 @@ end module dlf_hessian
 subroutine dlf_formstep
 !! SOURCE
   use dlf_parameter_module, only: rk
-  use dlf_global, only: glob,stderr,stdout,printl
+  use dlf_global, only: glob,stderr,stdout,printl,pi
   use dlf_formstep_module
   use dlf_hessian
   use dlf_allocate
+  use dlf_constants, only : dlf_constants_get
   implicit none
   !
   real(rk)       :: oldstep(glob%nivar)
@@ -141,10 +145,14 @@ subroutine dlf_formstep
   logical        :: trestart
   integer        :: ivar,jvar
   real(rk),allocatable :: hess(:,:) ! for Newton-Raphson
+  real(rk),allocatable :: ev2(:) ! for Newton-Raphson
+  !real(rk),allocatable :: eigval(:) ! for Newton-Raphson
   real(rk),external :: ddot
   real(rk)       :: friction
   real(rk)       :: eigvalThreshold = 1.0d-10
   real(rk)       :: projGradient
+  ! for NR-QTS
+  real(rk)       :: beta_hbar,dtau,CM_INV_FOR_AMU,amu
 ! **********************************************************************
   select case (glob%iopt)
 
@@ -241,21 +249,24 @@ subroutine dlf_formstep
 ! ======================================================================
   CASE (10)
 
+    ! Note in the microiterative case (where nihvar /= glob%nivar), we
+    ! rely on icoords etc. being ordered with inner region first.
+
     ! store old coords and grad
-    if(sum((oldc(:)-glob%icoords(:))**2) > minstep ) then
-      oldc(:)=glob%icoords(:)
-      oldgrad(:)=glob%igradient(:)
+    if(sum((oldc(:)-glob%icoords(1:nihvar))**2) > minstep ) then
+      oldc(:)=glob%icoords(1:nihvar)
+      oldgrad(:)=glob%igradient(1:nihvar)
     end if
     ! send information to set_tsmode
     call dlf_formstep_set_tsmode(1,-1,glob%energy) ! send energy
     call dlf_formstep_set_tsmode(glob%nvar,0,glob%xcoords) ! TS-geometry
-    call dlf_prfo_step(glob%nivar,GLOB%ICOORDS,GLOB%IGRADIENT, &
-        glob%ihessian,GLOB%STEP)
+    call dlf_prfo_step(nihvar, glob%icoords(1:nihvar), &
+        glob%igradient(1:nihvar), glob%ihessian, glob%step(1:nihvar))
 
 ! ======================================================================
 ! Hessian and thermal analysis only
 ! ======================================================================
-  CASE (11)
+  CASE (9, 11, 12)
     ! do nothing
 
 ! ======================================================================
@@ -266,20 +277,64 @@ subroutine dlf_formstep
 
     ! store Hessian
     call allocate(hess,glob%nivar,glob%nivar)
+    call allocate(ev2,glob%nivar)
     hess(:,:)=glob%ihessian(:,:)
 
 !    ivar = array_invert(hess,svar,.true.,glob%nivar)
-    call dlf_matrix_invert(glob%nivar,.true.,hess,svar)
-    if(printl>=6) write(stdout,"('Determinant of H in NR step: ',es10.3)") svar
+!!$    ! full inverstion - only works without soft modes
+!!$    call dlf_matrix_invert(glob%nivar,.false.,hess,svar)
+!!$!    if(printl>=4) write(stdout,"('Determinant of H in NR step: ',es10.2)") svar
 
-!    ! multiply inverse hessian with gradient:
-!    do ivar=1,glob%nivar
-!      glob%step(ivar)=-sum(hess(ivar,:)*glob%igradient(:))
-!    end do
-    call dlf_matrix_multiply(glob%nivar,1,glob%nivar,-1.D0,hess, &
-        glob%igradient, 0.D0, glob%step)
+    ! Alternative: skip eigenvectors which belong to the 6 softest modes
+    if(printl>=4) write(stdout,"('Diagonalizing the Hessian...')")
+    call dlf_matrix_diagonalise(glob%nivar,glob%ihessian,eigval,hess)
+    ev2=abs(eigval)
+    soft=-0.1D0
+    do ivar=1,glob%nzero
+      soft=minval(ev2)
+      ev2(minloc(ev2))=huge(1.D0)
+    end do
+    if(printl>=4) write(stdout,"('Criterion for soft modes in NR: ',es10.3)") soft
+
+    if(glob%icoord==190) then
+      call dlf_constants_get("AMU",amu)
+      call dlf_constants_get("CM_INV_FOR_AMU",CM_INV_FOR_AMu)
+    END if
+
+    glob%step(:)=0.D0
+    do ivar=1,glob%nivar
+      if(abs(eigval(ivar))>soft) then
+        if(ivar<=12.and.printl>=4.and.glob%icoord==190) then
+          ! I am not sure how realistic these are with varying dtau
+          svar=sqrt(abs(eigval(ivar)*dble(glob%nimage)*amu))*CM_INV_FOR_AMU
+          if(eigval(ivar)<0.D0) svar=-svar
+          write(stdout,'(" Eigval ",i2,1x,es10.3,2x,f10.3," cm^-1, used")') &
+              ivar,eigval(ivar),svar
+        end if
+        eigval(ivar)=1.D0/eigval(ivar)
+        ! for finding first-order saddle points:
+        if(glob%icoord==190 .and. ivar>1 .and. eigval(ivar)<0.D0 ) then
+          eigval(ivar)=-eigval(ivar)
+          if(printl>=4) write(stdout,'("Inverted mode",i3)') ivar
+        end if
+
+        ! contribution to NR step
+        svar=ddot(glob%nivar,hess(:,ivar),1,glob%igradient,1)
+        glob%step=glob%step - hess(:,ivar) * eigval(ivar) * svar 
+
+      else
+        if(ivar<=12.and.printl>=4.and.glob%icoord==190) then
+          svar=sqrt(abs(eigval(ivar)*dble(glob%nimage)*amu))*CM_INV_FOR_AMU
+          if(eigval(ivar)<0.D0) svar=-svar
+          write(stdout,'(" Eigval ",i2,1x,es10.3,2x,f10.3," cm^-1, ignored")') &
+              ivar,eigval(ivar),svar
+        end if
+        eigval(ivar)=0.D0
+      end if
+    end do
 
     call deallocate(hess)
+    call deallocate(ev2)
     
     ! store old coords and grad
     if(sum((oldc(:)-glob%icoords(:))**2) > minstep ) then
@@ -423,7 +478,7 @@ end subroutine dlf_formstep_restart
 !!
 !!
 !! SYNOPSIS
-subroutine dlf_formstep_init(needhessian)
+subroutine dlf_formstep_init(needhessian_)
 !! SOURCE
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stderr
@@ -431,7 +486,7 @@ subroutine dlf_formstep_init(needhessian)
   use dlf_hessian
   use dlf_allocate, only: allocate
   implicit none
-  logical,intent(out)     :: needhessian
+  logical,intent(out)     :: needhessian_
 ! **********************************************************************
   fd_hess_running=.false.
   needhessian=.false.
@@ -459,13 +514,20 @@ subroutine dlf_formstep_init(needhessian)
 ! L-BFGS
   case (3)
     call dlf_lbfgs_init(glob%nivar,glob%lbfgs_mem)
+  case (9)
+! fd-test
+    needhessian=.true.
   case (10)
 ! P-RFO
     needhessian=.true.
-    call allocate(tsvector,glob%nivar)
+    if (glob%imicroiter > 0) then
+       call allocate(tsvector,glob%nicore)
+    else
+       call allocate(tsvector,glob%nivar)
+    end if
     tsvector(:)=0.D0
     tsvectorset=.false.
-  case (11)
+  case (11,12)
 ! Hessian and thermal analysis only
     needhessian=.true.
 ! Newton-Raphson
@@ -476,23 +538,35 @@ subroutine dlf_formstep_init(needhessian)
   ! allocate the global Hessian if required
   if(needhessian) then
     ! part of module dlf_hessian
-    nivar=glob%nivar
-    call allocate(glob%ihessian,nivar,nivar)
+    if (glob%imicroiter > 0) then
+       ! In microiterative P-RFO only the inner region has a Hessian
+       nihvar = glob%nicore
+    else
+       nihvar = glob%nivar
+    end if
+    call allocate(glob%ihessian,nihvar,nihvar)
     glob%ihessian=0.D0
     glob%havehessian=.false.
+    ! set numfd just to init it, reset in fdhessian 
+    numfd = nihvar
 
     ! update and PRFO
-    call allocate(oldc,nivar)
+    call allocate(oldc,nihvar)
     oldc(:)=0.D0 ! initialise, as the question of update may depend on them
-    call allocate(oldgrad,nivar)
+    call allocate(oldgrad,nihvar)
     iupd=0
     ! FD HESSIAN calculation
-    call allocate(storegrad,nivar)
+    call allocate(storegrad,nihvar)
 
-    call allocate(eigval,nivar)
-    call allocate(eigvec,nivar,nivar)
+    call allocate(eigval,nihvar)
+    call allocate(eigvec,nihvar,nihvar)
 
   end if
+
+  needhessian_=needhessian
+
+  ! Initialise microiterative optimisation if required
+  if (glob%imicroiter > 0) call dlf_microiter_init
 
 end subroutine dlf_formstep_init
 !!****
@@ -519,32 +593,35 @@ subroutine dlf_formstep_destroy
   select case (glob%iopt)
 ! steepest descent
   case (1,2,30)
-    call deallocate(oldg1)
-    call deallocate(g1)
-    call deallocate(oldcoords)
+    if (allocated(oldg1)) call deallocate(oldg1)
+    if (allocated(g1)) call deallocate(g1)
+    if (allocated(oldcoords)) call deallocate(oldcoords)
 
 ! L-BFGS
   case (3)
     call dlf_lbfgs_destroy
 ! P-RFO
   case (10)
-    call deallocate(tsvector)
+    if (allocated(tsvector)) call deallocate(tsvector)
   end select
 
   if(allocated(glob%ihessian)) then
     call deallocate(glob%ihessian)
     glob%havehessian=.false.
 
-    call deallocate(oldc)
-    call deallocate(oldgrad)
+    if (allocated(oldc)) call deallocate(oldc)
+    if (allocated(oldgrad)) call deallocate(oldgrad)
 
     ! FD HESSIAN calculation
-    call deallocate(storegrad)
+    if (allocated(storegrad)) call deallocate(storegrad)
 
-    call deallocate(eigval)
-    call deallocate(eigvec)
+    if (allocated(eigval)) call deallocate(eigval)
+    if (allocated(eigvec)) call deallocate(eigvec)
 
   end if
+
+  if (glob%imicroiter > 0) call dlf_microiter_destroy
+
 end subroutine dlf_formstep_destroy
 !!****
 
@@ -606,7 +683,7 @@ subroutine dlf_checkpoint_formstep_write
   select case (glob%iopt)
 
 ! Algorithms with no checkpoint:
-  case (0, 11, 20, 40, 51, 52)
+  case (0, 11, 12, 20, 40, 51, 52)
 
 ! Conjugate gradient, damped dyn
   case (1:2,30)
@@ -665,9 +742,9 @@ subroutine dlf_checkpoint_formstep_write
     if(tchkform) then
       open(unit=100,file="dlf_hessian.chk",form="formatted")
       call write_separator(100,"Hessian size")
-      write(100,*) nivar
+      write(100,*) nihvar
       call write_separator(100,"Hessian data")
-      write(100,*) glob%havehessian,fd_hess_running,iivar,direction,storeenergy,iupd,fracrec
+      write(100,*) glob%havehessian,fd_hess_running,iivar,direction,storeenergy,iupd,fracrec,numfd
       call write_separator(100,"Hessian arrays")
       write(100,*) glob%ihessian,oldc,oldgrad
       if(allocated(storegrad)) write(100,*) storegrad
@@ -676,9 +753,9 @@ subroutine dlf_checkpoint_formstep_write
     else
       open(unit=100,file="dlf_hessian.chk",form="unformatted")
       call write_separator(100,"Hessian size")
-      write(100) nivar
+      write(100) nihvar
       call write_separator(100,"Hessian data")
-      write(100) glob%havehessian,fd_hess_running,iivar,direction,storeenergy,iupd,fracrec
+      write(100) glob%havehessian,fd_hess_running,iivar,direction,storeenergy,iupd,fracrec,numfd
       call write_separator(100,"Hessian arrays")
       write(100) glob%ihessian,oldc,oldgrad
       if(allocated(storegrad)) write(100) storegrad
@@ -777,7 +854,7 @@ subroutine dlf_checkpoint_formstep_read(tok)
 ! ======================================================================
 ! Algorithms with no checkpoint
 ! ======================================================================
-  case (0,11,20, 40, 51, 52)
+  case (0,11,12,20, 40, 51, 52)
 
     tok=.true.
 
@@ -871,8 +948,8 @@ subroutine dlf_checkpoint_formstep_read(tok)
     else
       read(100,end=201,err=200) var
     end if
-    if(var/=nivar) then
-      print*,var,nivar
+    if(var/=nihvar) then
+      print*,var,nihvar
       write(stdout,10) "Inconsistent Hessian size"
       close(100)
       return
@@ -883,10 +960,10 @@ subroutine dlf_checkpoint_formstep_read(tok)
 
     if(tchkform) then
       read(100,*,end=201,err=200) glob%havehessian,fd_hess_running,iivar, &
-          direction,storeenergy,iupd,fracrec
+          direction,storeenergy,iupd,fracrec,numfd
     else
       read(100,end=201,err=200) glob%havehessian,fd_hess_running,iivar, &
-          direction,storeenergy,iupd,fracrec
+          direction,storeenergy,iupd,fracrec,numfd
     end if
 
     call read_separator(100,"Hessian arrays",tchk)
@@ -952,7 +1029,7 @@ end subroutine dlf_checkpoint_formstep_read
 !!
 !! FUNCTION
 !!
-!! called from the main cycle in dl_find
+!! called from the main cycle in dl-find
 !! Build up a Hessian by either:
 !! * Reading it in from external sources (dlf_get_hessian)
 !! * Updating an existing Hessian
@@ -966,44 +1043,94 @@ subroutine dlf_makehessian(trerun_energy,tconv)
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stdout,printl
   use dlf_stat, only: stat
+  use dlf_constants, only: dlf_constants_get
+  use dlf_allocate
   use dlf_hessian
   implicit none
   logical, intent(inout) :: trerun_energy
   logical, intent(inout) :: tconv
   integer                :: status
   integer                :: iimage ! not used here
+  logical                :: was_updated,tok
   ! this should be improved ...
-  real(rk) :: hess_loc(glob%nvar,glob%nvar)
-  integer :: i
+  ! real(rk) :: hess_loc(glob%nvar,glob%nvar)
+  real(rk),allocatable :: hess_loc(:,:) !glob%nvar,glob%nvar)
+  real(rk),allocatable :: mass(:) 
+  real(rk) :: svar,arr2(2)
+  integer :: i,ivar
 ! **********************************************************************
+  ! Don't update the Hessian on a microiterative step
+  ! as the Hessian only applies to the inner (P-RFO) region
+  if (glob%imicroiter == 2) return
+
   if (glob%icoord >= 10 .and. glob%icoord <= 19) then
+     if (glob%imicroiter > 0) call dlf_fail("microiterative LN not implemented")
      call dlf_conint_make_ln_hess(trerun_energy,tconv)
      return
   endif
 
-  call dlf_hessian_update(glob%nivar, glob%icoords, oldc, glob%igradient, &
-       oldgrad, glob%ihessian, glob%havehessian, fracrec)
+  if(glob%icoord==190) then
+    if (glob%imicroiter > 0) call dlf_fail("microiterative qts not implemented") 
+    call dlf_qts_get_hessian(trerun_energy)
+    call qts_hessian_etos_halfpath 
+    !
+    return
+    !
+  end if
 
+  ! read hessian if inithessian=5
+  if (glob%inithessian == 5) then
+    if (glob%imicroiter > 0) call dlf_fail("microiterative qts not implemented")
+    ivar=1
+    call allocate(mass,glob%nat)
+    call read_qts_hessian(glob%nat,ivar,glob%nivar,glob%temperature,&
+        svar,glob%xcoords,glob%ihessian,svar,arr2,mass,"",tok)
+    if(.not.tok) call dlf_fail("Reading Hessian from file failed")
+    if(ivar/=1) call dlf_fail("Hessian must contain one image")
+    call deallocate(mass)
+    call dlf_constants_get("AMU",svar)
+    glob%ihessian=glob%ihessian*svar !*(1.66054D-27/9.10939D-31)
+    call dlf_matrix_diagonalise(glob%nivar,glob%ihessian,eigval,eigvec)
+    if (printl>=4 .or. (glob%iopt==11 .and. printl>=2)) then      
+      write(stdout,"(/,'Hessian eigenvalues:')")
+      write(stdout,"(12f9.5)") eigval
+    end if
+    glob%havehessian=.true.
+    return
+  end if
+
+  call dlf_hessian_update(nihvar, glob%icoords(1:nihvar), oldc, &
+       glob%igradient(1:nihvar), oldgrad, glob%ihessian, &
+       glob%havehessian, fracrec, was_updated)
+  ! issue: since was_updated is not used any more, oldgrad will be wrong for too large minstep
+  
   if(.not.glob%havehessian) then
 
     if(.not. fd_hess_running) then
       ! test for convergence before calculating the Hessian
-      call convergence_test(stat%ccycle,.false.,tconv)
-      if(tconv) return
+      ! skip that if Hessian calculation is the main task
+      if(glob%iopt/=11.and.glob%iopt/=12) then
+        call convergence_test(stat%ccycle,.true.,tconv)
+        if(tconv) return
+      end if
 
       if (glob%inithessian == 4) then
          ! Initial Hessian is the identity matrix
          glob%ihessian = 0.0d0
-         do i = 1, glob%nivar
+         do i = 1, nihvar
             glob%ihessian(i, i) = 1.0d0
          end do
          glob%havehessian = .true.
       end if
 
       if (glob%inithessian == 0) then
+         if (glob%imicroiter > 0) call dlf_fail(&
+              "inithessian = 0 with microiterative opt not yet implemented")
          ! try to get an analytic Hessian - care about allocation business
          ! call to an external routine ...
+         call allocate(hess_loc,glob%nvar,glob%nvar)
          call dlf_get_hessian(glob%nvar,glob%xcoords,hess_loc,status)
+         if(status==0.and.printl>=4) write(stdout,"('Analytic hessian calculated')")
          !switch:
          !status=1
          
@@ -1020,6 +1147,7 @@ subroutine dlf_makehessian(trerun_energy,tconv)
             if(printl>=2) write(stdout,'(a)') &
                  "External Hessian not available, using two point FD."
          end if
+         call deallocate(hess_loc)
       end if
     end if
 
@@ -1027,12 +1155,13 @@ subroutine dlf_makehessian(trerun_energy,tconv)
 
       if (glob%inithessian == 3) then
          ! Simple diagonal Hessian a la MNDO
-         call dlf_diaghessian(glob%nivar,glob%energy,glob%icoords, &
-              glob%igradient,glob%ihessian,glob%havehessian)
+         call dlf_diaghessian(nihvar, glob%energy, glob%icoords(1:nihvar), &
+              glob%igradient(1:nihvar), glob%ihessian, glob%havehessian)
       else
          ! Finite Difference Hessian calculation in internal coordinates
-         call dlf_fdhessian(glob%nivar,fracrec,glob%energy,glob%icoords, &
-              glob%igradient,glob%ihessian,glob%havehessian)
+         ! dlf_fdhessian writes fd_hess_running
+         call dlf_fdhessian(nihvar, fracrec, glob%energy, glob%icoords(1:nihvar), &
+              glob%igradient(1:nihvar), glob%ihessian, glob%havehessian)
       end if
 
       ! check if FD-Hessian calculation currently running
@@ -1045,14 +1174,21 @@ subroutine dlf_makehessian(trerun_energy,tconv)
 
     end if
 
-    ! tmp print JK
     if(glob%havehessian) then
-      write(*,"('HESS',6F10.4)") glob%ihessian
-      call dlf_matrix_diagonalise(glob%nivar,glob%ihessian,eigval,eigvec)
-      write(stdout,"('Hessian eigenvalues: ',12f10.4)") eigval
+      ! Print out Hessian if running Hessian evaluation only or if debugging
+      if (printl>=6 .or. (glob%iopt==11 .and. printl>=2)) then
+        write(stdout,"(/,'Symmetrised Hessian matrix (DL-FIND coordinates):')")
+        call dlf_matrix_print(nihvar, nihvar, glob%ihessian)
+      end if
+      ! Determine eigenvalues and eigenvectors
+      call dlf_matrix_diagonalise(nihvar,glob%ihessian,eigval,eigvec)
+      if (printl>=4 .or. (glob%iopt==11 .and. printl>=2)) then      
+         write(stdout,"(/,'Hessian eigenvalues:')")
+         write(stdout,"(12f9.5)") eigval
+      end if
+   end if
 
-    end if
-  end if
+ end if
 
 end subroutine dlf_makehessian
 !!****
@@ -1176,7 +1312,8 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
   real(rk),intent(inout) :: gradient(nvar_) ! at the last step out
   real(rk),intent(inout) :: hess(nvar_,nvar_)
   logical,intent(out)    :: havehessian
-  integer                :: fail,ivar,jvar
+  integer                :: status ! parallel FD check
+  integer                :: fail,ivar,jvar,taskfarm_mode
   real(rk)               :: svar
   real(rk),allocatable   :: tmpmat(:,:)
 ! **********************************************************************
@@ -1199,18 +1336,28 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
         write(stdout,'(A,i3,a)') "Finite-difference calculation of the", &
             ivar," lowest Hessian eigenmodes"
       end if
-      nivar=ivar
+      numfd = ivar
     else
       if(printl >= 4) then
         write(stdout,'(A)') &
             "Finite-difference calculation of the whole Hessian"
       end if
-      nivar=nvar_
+      numfd = nvar_
     end if
     iivar=1
     direction=1 ! do first 1, then -1
-    storeenergy=energy
 
+    ! Task-farming allocation based on iivar
+    ! For full Hessian calculations only 
+    ! (standalone Hessian calcs in mind rather than optimisations)
+    ! To extend to fracrecalc case, would need to consider how to deal
+    ! with non-zero initial Hessian when sharing data
+    call dlf_qts_get_int("TASKFARM_MODE",taskfarm_mode)
+    if (.not. fracrecalc .and. glob%ntasks > 1.and.taskfarm_mode==1) then
+       glob%dotask = (mod(iivar,glob%ntasks) == glob%mytask)
+    end if
+
+    storeenergy=energy
     ! keep gradient and restore it when Hessian has finished
     storegrad(1:nvar_)=gradient(:)
 
@@ -1245,9 +1392,11 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
     
   end if !(.not.fd_hess_running)
 
-  if(printl>=4) then
+  if(printl>=4 .and. glob%dotask) then
     write(stdout,"('Finite-difference Hessian: variable ',i4,'/',i4,&
-        &' direction=',i2)") iivar,nivar,direction
+        &' direction=',i2)") iivar,numfd,direction
+  end if
+  if(printl>=3 .and. glob%dotask) then
     write(stdout,"('Energy difference to midpoint:        ',es10.2,' H')") energy-storeenergy
     svar=sqrt(sum((gradient(:)-storegrad(1:nvar_))**2))
     write(stdout,"('Abs. Gradient difference to midpoint: ',es10.2)") svar
@@ -1255,11 +1404,13 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
 
   ! The values of iivar and direction are those for which the gradient is currently available
 
-  if(iivar<nivar.or. (twopoint.and.direction==1) ) then
+  if(iivar<numfd.or. (twopoint.and.direction==1) ) then
     ! general step in the course of Hessian calculation
 
     if(direction==1.and.twopoint) then
-      hess(iivar,:)=gradient(:)
+      if (glob%dotask) then
+        hess(iivar,:)=gradient(:)
+      end if
       direction=-1
       if(fracrecalc) then
         coords(:)=coords(:) - 2.D0 * glob%delta * eigvec(1:nvar_,iivar)
@@ -1275,7 +1426,9 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
                0.D0,hess(iivar,:))
           coords(:)=coords(:) + glob%delta * eigvec(1:nvar_,iivar)
         else
-          hess(iivar,:)=(hess(iivar,:)-gradient(:))/(2.D0*glob%delta)
+          if (glob%dotask) then
+            hess(iivar,:)=(hess(iivar,:)-gradient(:))/(2.D0*glob%delta)
+          end if
           coords(iivar)=coords(iivar)+glob%delta
         end if
         direction=1
@@ -1286,11 +1439,18 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
                0.D0,hess(iivar,:))
           coords(:)=coords(:) - glob%delta * eigvec(1:nvar_,iivar)
         else
-          hess(iivar,:)=(gradient(:)-storegrad(1:nvar_)) / glob%delta
+          if (glob%dotask) then 
+            hess(iivar,:)=(gradient(:)-storegrad(1:nvar_)) / glob%delta
+          end if
           coords(iivar)=coords(iivar)-glob%delta
         end if
       end if
       iivar=iivar+1
+      ! Task-farming: next allocation
+      call dlf_qts_get_int("TASKFARM_MODE",taskfarm_mode)
+      if (.not. fracrecalc .and. glob%ntasks > 1.and.taskfarm_mode==1) then
+        glob%dotask = (mod(iivar,glob%ntasks) == glob%mytask)
+      end if
       if(fracrecalc) then
         coords(:)=coords(:) + glob%delta * eigvec(1:nvar_,iivar)
       else
@@ -1300,7 +1460,7 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
       
     havehessian=.false.
       
-  else
+  else !(iivar<numfd.or. (twopoint.and.direction==1) )
     ! final step: calculate Hessian and deallocate
     !set back coordinates
     if(twopoint) then
@@ -1310,7 +1470,9 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
              0.D0,hess(iivar,:))
         coords(:)=coords(:) + glob%delta * eigvec(1:nvar_,iivar)
       else
-        hess(iivar,:)=(hess(iivar,:)-gradient(:))/(2.D0*glob%delta)
+        if (glob%dotask) then 
+           hess(iivar,:)=(hess(iivar,:)-gradient(:))/(2.D0*glob%delta)
+        end if
         coords(iivar)=coords(iivar)+glob%delta
       end if
     else
@@ -1320,9 +1482,24 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
              0.D0,hess(iivar,:))
         coords(:)=coords(:) - glob%delta * eigvec(1:nvar_,iivar)
       else
-        hess(iivar,:)=(gradient(:)-storegrad(1:nvar_)) / glob%delta
+        if (glob%dotask) then 
+          hess(iivar,:)=(gradient(:)-storegrad(1:nvar_)) / glob%delta
+        end if
         coords(iivar)=coords(iivar)-glob%delta
       end if
+    end if
+
+    ! Task-farming: check no gradient evaluations in other workgroups failed
+    ! then share Hessian data
+    call dlf_qts_get_int("TASKFARM_MODE",taskfarm_mode)
+    if (.not. fracrecalc .and. glob%ntasks > 1.and.taskfarm_mode==1) then
+       ! If it has got here all calcs on this workgroup have succeeded
+       status = 0
+       call dlf_tasks_int_sum(status, 1)
+       if (status > 0) then
+          call dlf_fail("Task-farmed gradient evaluations failed")
+       end if
+       call dlf_tasks_real_sum(hess, nvar_*nvar_)
     end if
 
     ! Symmetrise the Hessian
@@ -1331,9 +1508,9 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
       ! build up the Hessian
 
       ! symmetrise
-      do ivar=1,nivar
+      do ivar=1,numfd
         do jvar=ivar+1,nvar_
-          if(jvar<=nivar) then
+          if(jvar<=numfd) then
             hess(ivar,jvar)=0.5D0*(hess(ivar,jvar)+hess(jvar,ivar))
             hess(jvar,ivar)=hess(ivar,jvar)
           else
@@ -1351,8 +1528,8 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
       call deallocate(tmpmat)
       
     else
-      do ivar=1,nivar
-        do jvar=ivar+1,nivar
+      do ivar=1,numfd
+        do jvar=ivar+1,numfd
           hess(ivar,jvar)=0.5D0*(hess(ivar,jvar)+hess(jvar,ivar))
           hess(jvar,ivar)=hess(ivar,jvar)
         end do
@@ -1364,12 +1541,151 @@ subroutine dlf_fdhessian(nvar_,fracrecalc,energy,coords,gradient,hess,havehessia
     gradient(:)=storegrad(1:nvar_)
 
     fd_hess_running=.false.
-
     havehessian=.true.
+    call dlf_qts_get_int("TASKFARM_MODE",taskfarm_mode)
+    if(taskfarm_mode==1) glob%dotask = .true.
 
-  end if
+  end if ! (iivar<numfd.or. (twopoint.and.direction==1) )
 
 end subroutine dlf_fdhessian
+!!****
+
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* hessian/dlf_test_delta
+!!
+!! FUNCTION
+!!
+!! Test various different values of delta for calculating a Hessian by
+!! a two-point finite-difference of the gradients.
+!!
+!! For numdelta=9 (hardcoded), 19 Energy and gradient calculations are
+!! performed. The elongations are always calculated for the first
+!! element in the coordinates array. The different values for the
+!! first diagonal element of the resulting Hessian are plotted at the
+!! end.
+!!
+!! This routine is called if iopt=9
+!!
+!! SYNOPSIS
+subroutine dlf_test_delta(trerun_energy)
+!! SOURCE
+  use dlf_parameter_module, only: rk
+  use dlf_global, only: glob,stdout,printl
+  use dlf_hessian
+  implicit none
+  logical,intent(out):: trerun_energy
+  integer,parameter :: numdelta=9 ! hardcoded for the time being
+  real(rk),save     :: dder(numdelta)
+  real(rk)          :: delta(numdelta)
+  integer           :: ivar
+  real(rk)          :: svar
+  logical           :: tok
+! **********************************************************************
+
+  if(.not.allocated(storegrad)) then
+    call dlf_fail("Hessian module must be initiated when dlf_test_delta is called")
+  end if
+
+  if (glob%imicroiter > 0) then
+     call dlf_fail('dlf_test_delta not yet compatible with microiterative PRFO')
+  end if
+
+  trerun_energy=.true.
+  ! set the values of delta to try out
+  delta(1)=0.0001D0
+  delta(2)=0.0002D0
+  delta(3)=0.0005D0
+  do ivar=4,numdelta
+    delta(ivar)=delta(ivar-3)*10.D0
+  end do
+
+  if(.not.fd_hess_running) then
+    ! First step - initialise
+
+    iivar=1
+    direction=1 ! do first 1, then -1
+    storeenergy=glob%energy
+    ! keep gradient and restore it when Hessian has finished
+    storegrad(:)=glob%igradient(:)
+
+    fd_hess_running=.true.
+
+    dder=0.D0
+    ! do first step
+    glob%icoords(1)=glob%icoords(1)+delta(1)
+
+  else !(.not.fd_hess_running)
+
+    ! intermediate steps
+
+    if(printl>=4) then
+      write(stdout,"('Finite-difference Hessian test calculation ',i4,'/',i4,&
+          &' direction=',i2)") iivar,numdelta,direction
+    end if
+    if(printl>=3) then
+      write(stdout,'("Delta :                               ",es10.2)') delta(iivar)
+      write(stdout,"('Energy difference to midpoint:        ',es10.2,' H')") glob%energy-storeenergy
+      svar=sqrt(sum((glob%igradient(:)-storegrad(:))**2))
+      write(stdout,"('Abs. Gradient difference to midpoint: ',es10.2)") svar
+    end if
+
+    ! The values of iivar and direction are those for which the gradient is currently available
+
+    if(iivar<numdelta.or. direction==1 ) then
+      ! general step in the course of Hessian calculation
+
+      if(direction==1) then
+        dder(iivar)=glob%igradient(1)
+        direction=-1
+        glob%icoords(1)=glob%icoords(1)-2.D0*delta(iivar)
+      else
+        !set back coordinates
+        dder(iivar)=(dder(iivar)-glob%igradient(1))/(2.D0*delta(iivar))
+        if(printl>=4) then
+          write(stdout,'("Delta: ",es10.3," First diagonal element of the &
+              &Hessian: ",es20.13)') delta(iivar),dder(iivar)
+        end if
+        glob%icoords(1)=glob%icoords(1)+delta(iivar)
+
+        direction=1
+        iivar=iivar+1
+
+        glob%icoords(1)=glob%icoords(1)+delta(iivar)
+      end if
+    else ! (iivar<numdelta.or. direction==1 )
+      ! final step: calculate Hessian and deallocate
+      !set back coordinates
+      dder(iivar)=(dder(iivar)-glob%igradient(1))/(2.D0*delta(iivar))
+      glob%icoords(1)=glob%icoords(1)+delta(iivar)
+
+      ! restore energy and gradient
+      glob%energy=storeenergy
+      glob%igradient(:)=storegrad(:)
+
+      fd_hess_running=.false.
+
+      !havehessian=.true.
+      trerun_energy=.false.
+
+      ! print report!
+      if(printl>=2) then
+        write(stdout,*) "Delta    First diagonal element of the Hessian"
+        do ivar=1,numdelta
+          write(stdout,'(es10.3,es20.13)') delta(ivar),dder(ivar)
+        end do
+      end if
+      
+    end if ! (iivar<numdelta.or. direction==1 )
+      
+  end if ! (.not.fd_hess_running)
+
+  ! transform coordinates back to xcoords
+  call dlf_direct_itox(glob%nvar,glob%nivar,glob%nicore,glob%icoords,glob%xcoords,tok)
+  if(.not.tok.and. mod(glob%icoord,10)>0 .and. mod(glob%icoord,10)<=4 ) then
+    call dlf_fail('HDLC coordinate breakdown')
+  end if
+
+end subroutine dlf_test_delta
 !!****
 
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -1417,7 +1733,7 @@ end subroutine dlf_fdhessian
 !!
 !! SYNOPSIS
 subroutine dlf_hessian_update(nvar, coords, oldcoords, gradient, &
-     oldgradient, hess, havehessian, fracrecalc)
+     oldgradient, hess, havehessian, fracrecalc, was_updated)
 !! SOURCE
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stdout, stderr, printl
@@ -1431,13 +1747,17 @@ subroutine dlf_hessian_update(nvar, coords, oldcoords, gradient, &
   real(rk),intent(inout) :: hess(nvar,nvar)
   logical,intent(inout) :: havehessian
   logical,intent(inout) :: fracrecalc ! recalculate fraction of Hessian
+  logical,intent(out)   :: was_updated ! at return: was the Hessian updated here?
   ! temporary arrays
   real(rk) :: fvec(nvar),step(nvar), tvec(nvar)
   real(rk) :: fx_xx,xx,svar,bof, dds, ddtd
   real(RK) ,external :: ddot
   integer  :: ivar,jvar
-  logical,parameter :: do_partial_fd=.true. ! Current main switch!
+  logical,parameter :: do_partial_fd=.false. ! Current main switch!
 ! **********************************************************************
+
+  was_updated=.false.
+
   if(.not.fd_hess_running) fracrecalc=.false.
   if(.not.havehessian.or.glob%update==0) then
     havehessian=.false.
@@ -1456,8 +1776,13 @@ subroutine dlf_hessian_update(nvar, coords, oldcoords, gradient, &
   end if
 
   if (glob%icoord >= 10 .and. glob%icoord <= 19) then
-     if (nvar /= glob%nivar - 2) &
-          call dlf_fail("Inconsistent Lagrange-Newton nvar in dlf_hessian_update")
+    if (nvar /= glob%nivar - 2) &
+        call dlf_fail("Inconsistent Lagrange-Newton nvar in dlf_hessian_update")
+  elseif(glob%icoord == 190 ) then
+    continue
+  elseif(glob%imicroiter > 0) then
+     if (nvar /= glob%nicore) &
+        call dlf_fail("Inconsistent microiterative nvar in dlf_hessian_update")
   elseif(nvar/=glob%nivar) then
       call dlf_fail("Inconsistent nvar in dlf_hessian_update")
   endif
@@ -1474,7 +1799,7 @@ subroutine dlf_hessian_update(nvar, coords, oldcoords, gradient, &
 
   iupd=iupd+1
 
-  if(printl>=2) then
+  if(printl>=3) then
      select case (glob%update)
      case(1)
         write(stdout,"('Updating Hessian with the Powell update, No ',i5)") iupd
@@ -1542,6 +1867,8 @@ subroutine dlf_hessian_update(nvar, coords, oldcoords, gradient, &
 
   end select
 
+  was_updated=.true.
+
   ! Check for maximum number of updates reached
   ! In case of partial finite-difference, do an update first, then return and 
   ! Recalculate the lower modes
@@ -1584,20 +1911,36 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
   !
   ! these may be made variable in the future:
   integer   :: maxit=100 ! maximum number of iterations to find lambda
-  real(rk)  :: tol=1.D-5 ! tolerance in iterations
+!  real(rk)  :: tol=1.D-5 ! tolerance in iterations
+  real(rk)  :: tol=1.D-6 ! tolerance in iterations
   real(rk)  :: bracket=1.D-4  ! threshold for using bracket scheme - why not 0.D0?
   real(rk)  :: delta=0.05D0, big=1000.D0 ! for bracketing 
   !
   real(rk)              :: lamts,lamu,laml,lam
   real(rk)              :: ug(nvar) ! eigvec * gradient
   real(rk)              :: tmpvec(nvar)
-  integer               :: ivar,iter,nmode
+  integer               :: ivar,iter,nmode,maxsoft
   real(rk)              :: svar,lowev,maxov
   real(rk)              :: soft_tmp,ev2(nvar)
+  real(rk)              :: CM_INV_FOR_AMU
   real(RK) ,external    :: ddot
   logical               :: conv=.false.,err=.false.
+  logical               :: skipmode(nvar)
   logical :: dbg=.true.
+  real(8)               :: lam_thresh
 ! **********************************************************************
+  
+  maxsoft=glob%nzero
+  ! try:
+  if(glob%icoord==190) then
+    tol=1.D-13
+    bracket=1.D-6
+    delta=1.D-3
+    maxit=1000
+  end if
+
+
+  if(.not.glob%havehessian) call dlf_fail("No Hessian present in P-RFO") !??
 
   call dlf_matrix_diagonalise(nvar,hessian,eigval,eigvec)
 
@@ -1648,15 +1991,17 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
   end if
 
   ! print frequency in case of mass-weighted coordinates
-  if(glob%massweight .and. printl>=2) then
+  if(glob%massweight  .and.(.not.glob%icoord==190) .and.printl>=2) then
     ! sqrt(H/u)/a_B/2/pi/c / 100
-    svar=sqrt( 4.35974417D-18/ 1.66053886D-27 ) / ( 2.D0 * pi * &
-        0.5291772108D-10 * 299792458.D0) / 100.D0
-    svar=sqrt(abs(eigval(tsmode))) * svar
-    if(eigval(tsmode)<0.D0) svar=-svar
-    write(stdout,"('Frequency of transition mode',f10.3,' cm^-1 &
-        &(negative value denotes imaginary frequency)')") &
-        svar
+    !svar=sqrt( 4.35974417D-18/ 1.66053886D-27 ) / ( 2.D0 * pi * &
+    !    0.5291772108D-10 * 299792458.D0) / 100.D0
+    !call dlf_constants_get("CM_INV_FOR_AMU",CM_INV_FOR_AMU)
+    !svar=sqrt(abs(eigval(tsmode))) * CM_INV_FOR_AMU
+    !if(eigval(tsmode)<0.D0) svar=-svar
+    !write(stdout,"('Frequency of transition mode',f10.3,' cm^-1 &
+    !    &(negative value denotes imaginary frequency)')") &
+    !    svar
+    call dlf_print_wavenumber(eigval(tsmode),.true.)
   end if
 
   call dlf_formstep_set_tsmode(nvar,11,eigvec(:,tsmode))
@@ -1674,6 +2019,10 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
   end if
 
   ! Calculate the number of modes considered "soft"
+  if (glob%imicroiter > 0 .and. maxsoft > 0 .and. printl >= 2) then
+     write(stdout,'("Warning: nzero > 0 is not appropriate for microiterative optimisation")')
+     write(stdout,'("nzero=0 recommended to allow core region to rotate/translate in environment.")')
+  end if
   nmode=0
   soft_tmp=soft
   ev2=0.D0
@@ -1686,8 +2035,8 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
   end do
 
   ! Check that at most 6 modes are considered "soft"
-  if(nmode>6) then
-    do ivar=nmode-1,6,-1
+  if(nmode>maxsoft) then
+    do ivar=nmode-1,maxsoft,-1
       soft_tmp=maxval(ev2)
       ev2(maxloc(ev2))=0.D0
     end do
@@ -1697,7 +2046,10 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
     nmode=0
     do ivar=1,nvar
       if(ivar==tsmode) cycle
-      if(abs(eigval(ivar)) < soft_tmp ) nmode=nmode+1
+      if(abs(eigval(ivar)) < soft_tmp ) then
+        nmode=nmode+1
+        if(printl>=4) write(stdout,'("Mode ",i4," considered soft")') ivar
+      end if
     end do
   end if
 
@@ -1711,6 +2063,18 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
     if(abs(eigval(ivar)) < soft_tmp ) cycle
     lowev=eigval(ivar)
     exit
+  end do
+
+  ! define skipmode
+  skipmode(:)=.true.
+  do ivar=1,nvar
+    if(ivar==tsmode) cycle
+    if(abs(eigval(ivar)) < soft_tmp ) cycle
+    ! instead of the above line: modes 2-7 soft
+    !  if(ivar>=2.and.ivar<=7) cycle
+    !  print*,"Modes 2 to 7 soft"
+    !<<<<
+    skipmode(ivar)=.false.
   end do
 
   lamu=0.D0
@@ -1729,9 +2093,11 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
 
     do ivar=1,nvar
       if(ivar==tsmode) cycle
-      if(abs(eigval(ivar)) < soft_tmp ) cycle
-      if(dabs(lam - eigval(ivar)) > 1.D-14) &
-          svar=svar+ ug(ivar)**2 / (lam - eigval(ivar) )
+      !if(abs(eigval(ivar)) < soft_tmp ) cycle
+      if(skipmode(ivar)) cycle
+      if(abs(lam - eigval(ivar)) > 1.D-14) then
+        svar=svar+ ug(ivar)**2 / (lam - eigval(ivar) )
+      end if
     end do
 
     if(abs(svar-lam) < tol) then
@@ -1792,13 +2158,19 @@ subroutine dlf_prfo_step(nvar,coords,gradient,hessian,step)
         ug(ivar)=ug(ivar) / (eigval(ivar) - lamts)
       end if
     else
-      if(abs(eigval(ivar)) < soft_tmp ) then
-        if(printl>=6) write(stdout,'("Mode ",i4," ignored, as &
+      !if(abs(eigval(ivar)) < soft_tmp ) then
+      if(skipmode(ivar) ) then
+        if(printl>=4) write(stdout,'("Mode ",i4," ignored, as &
             &|eigenvalue| ",es10.3," < soft =",es10.3)') &
             ivar,eigval(ivar),soft_tmp
         cycle
       end if
-      if( abs(lam-eigval(ivar)) < 1.D-5 ) then
+      if(glob%icoord==190) then
+        lam_thresh=1.D-10
+      else
+        lam_thresh=1.D-5
+      end if
+      if( abs(lam-eigval(ivar)) < lam_thresh ) then 
         print*,"WARNING: lam-eigval(ivar) small for non-TS mode",ivar,"!"
         ug(ivar)= -1.D0 / eigval(ivar) ! take a newton-raphson step for this one
       else
@@ -1851,7 +2223,9 @@ subroutine dlf_formstep_set_tsmode(nvar,mode,coords)
   logical              :: tok
   real(rk)             :: svar
   real(rk),external    :: ddot
+  integer              :: nivarf, nicoref
 ! **********************************************************************
+  if(glob%icoord==190) return
   if(mode==-1) then
     if(nvar/=1) return
     tenergy=.true.
@@ -1864,7 +2238,9 @@ subroutine dlf_formstep_set_tsmode(nvar,mode,coords)
     tsc_ok=.true.
   else if(mode==1) then
     if(.not.(allocated(tscoords).and.tsc_ok)) return
-    call dlf_direct_itox(glob%nvar,nvar,coords,tscoords,tok)
+    ! This mode does not appear to ever be called, so I do not know
+    ! how it should be modified for the microiterative case
+    call dlf_direct_itox(glob%nvar,nvar,glob%nicore,coords,tscoords,tok)
     if(.not.tok) then
       call deallocate(tscoords)
       write(stdout,'(a)') "HDLC breakdown in set_tsmode ignored in mode 1"
@@ -1886,17 +2262,20 @@ subroutine dlf_formstep_set_tsmode(nvar,mode,coords)
     tsmode_r=tscoords
     call allocate(store1,glob%nvar) ! xgradient
     store1=0.D0
-    call allocate(store2,nvar) ! igradient
+    ! get full region nivar (in a microiterative calc, nvar is only inner region)
+    call dlf_direct_get_nivar(0, nivarf)
+    call dlf_direct_get_nivar(1, nicoref)
+    call allocate(store2,nivarf) ! igradient
     store2=0.D0
-    call allocate(store3,nvar) ! icoords
+    call allocate(store3,nivarf) ! icoords
     store3=0.D0
-    call dlf_direct_xtoi(glob%nvar,nvar,tscoords,store1,store3,store2)
+    call dlf_direct_xtoi(glob%nvar,nivarf,nicoref,tscoords,store1,store3,store2)
     ! add coords
     ! make sure the relative coords are short:
     svar=ddot(nvar,coords,1,coords,1)
-    store3=store3+coords/sqrt(svar)*0.05D0
+    store3(1:nvar)=store3(1:nvar)+coords/sqrt(svar)*0.05D0
     ! transform to x-coords
-    call dlf_direct_itox(glob%nvar,nvar,store3,tsmode_r,tok)
+    call dlf_direct_itox(glob%nvar,nivarf,nicoref,store3,tsmode_r,tok)
     call deallocate(store1)
     call deallocate(store2)
     call deallocate(store3)
@@ -1918,12 +2297,20 @@ subroutine dlf_formstep_set_tsmode(nvar,mode,coords)
   if(tsc_ok.and.tsm_ok.and. tenergy) then
     if(printf>=2) then
       if(printl>=4) write(stdout,"('Writing TS-mode')")
-      call dlf_put_coords(glob%nvar,1,energy,tscoords,glob%iam)
+      ! JMC call dlf_put_coords(glob%nvar,1,energy,tscoords,glob%iam) JMC
+      ! changed the mode in this call from 1 to 3 for convenience with the
+      ! castep interface; this means that for CRYSTAL and CASTEP the ts coords
+      ! will not go to the general coords file (at least one of which in each
+      ! case is written in append mode) but instead will go to a specific file
+      ! for TS coords only, currently overwritten each time (see the routines
+      ! in the interface files for more details)
+      call dlf_put_coords(glob%nvar,3,energy,tscoords,glob%iam)
       if(glob%tsrelative) then
         call dlf_put_coords(glob%nvar,2,energy,tsmode_r,glob%iam) 
       else
         call dlf_put_coords(glob%nvar,2,energy,tscoords+tsmode_r,glob%iam) 
       end if
+      if(printf>=3.and.glob%iam == 0) call write_xyz(32,glob%nat,glob%znuc,tsmode_r)
     end if
     !call deallocate(tscoords)
     !call deallocate(tsmode_r)
@@ -1971,6 +2358,32 @@ end subroutine dlf_formstep_get_ra
 !!****
 
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* formstep/dlf_formstep_get_logical
+!!
+!! FUNCTION
+!!
+!! Get a logical value the formstep module
+!!
+!! SYNOPSIS
+subroutine dlf_formstep_get_logical(label,tval)
+!! SOURCE
+  use dlf_formstep_module, only: needhessian
+  use dlf_hessian, only: fd_hess_running
+  implicit none
+  character(*), intent(in) :: label
+  logical     , intent(out):: tval
+! **********************************************************************
+  if (label=="NEEDHESSIAN") then
+    tval=needhessian
+  else if (label=="FD_HESS_RUNNING") then
+    tval=fd_hess_running
+  else
+    call dlf_fail("Wrong label in dlf_formstep_get_logical")
+  end if
+end subroutine dlf_formstep_get_logical
+!!****
+
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 !!****f* hessian/dlf_thermal
 !!
 !! FUNCTION
@@ -1983,69 +2396,100 @@ end subroutine dlf_formstep_get_ra
 subroutine dlf_thermal()
 !! SOURCE
   use dlf_parameter_module, only: rk
-  use dlf_global, only: glob,stdout,printl,pi
+  use dlf_global, only: glob,stdout,printl,pi,printf
   use dlf_stat, only: stat
+  use dlf_constants, only : dlf_constants_get
   use dlf_hessian
   implicit none
   real(rk)        :: frequency_factor,svar
   real(rk)        :: temperature,planck,boltz,wavenumber
   real(rk)        :: speed_of_light, angstrom,hartree,avog
   real(rk)        :: evib, frequ, svib, vibtemp, zpe 
-  real(rk)        :: zpetot,evibtot,svibtot
-  integer         :: ival
+  real(rk)        :: zpetot,evibtot,svibtot,kboltz_au,svar2
+  integer         :: ival, npmodes
+  real(rk)        :: peigval(glob%nivar)
+  real(rk)        :: ev2(glob%nivar),soft_local
+  real(rk)        :: arr2(2)
+  logical         :: tok
 ! **********************************************************************
   if (.not.glob%massweight .or. glob%icoord /= 0) then
      call dlf_fail("Thermal analysis only possible in mass-weighted &
-         &internal coordinates")
+         &cartesian coordinates")
   endif
   if (.not.glob%havehessian) then
     call dlf_fail("No hessian present for thermal analysis")
   end if
+  if (glob%imicroiter > 0) then
+     call dlf_fail("dlf_thermal not compatible with microiter")
+  end if
   ! only act on first node, but print analysis even for printl=0
   if(printl<0) return
 
+  ! Project out translation and rotational modes
+  ! (if no atoms are frozen)
+  call dlf_thermal_project(npmodes,peigval,tok)
 
-!!$  ! tmp print JK
-!!$  if(glob%havehessian) then
-!!$    write(*,"('HESS',6F10.4)") glob%ihessian
-!!$    call dlf_matrix_diagonalise(glob%nivar,glob%ihessian,eigval,eigvec)
-!!$    write(stdout,"('Hessian eigenvalues: ',12f10.4)") eigval
-!!$    
-!!$  end if
-
+  ! Vibrational analysis
 
   ! constants from NIST (2008)
-  speed_of_light=299792458.D0
-  planck=6.62606896D-34
-  boltz=1.3806504D-23
-  avog=6.02214179D23
+  !speed_of_light=299792458.D0
+  !planck=6.62606896D-34
+  !boltz=1.3806504D-23
+  !avog=6.02214179D23
 
   ! derived values
-  angstrom=0.5291772108D-10
-  hartree=4.35974417D-18
+  !angstrom=0.5291772108D-10
+  !hartree=4.35974417D-18
 
   ! sqrt(H/u)/a_B/2/pi/c / 100
-  frequency_factor=dsqrt( 4.35974417D-18/ 1.66053886D-27 ) / ( 2.D0 * pi * &
-      angstrom * speed_of_light) / 100.D0
+  !frequency_factor=dsqrt( 4.35974417D-18/ 1.66053886D-27 ) / ( 2.D0 * pi * &
+  !    angstrom * speed_of_light) / 100.D0
+  !print*,"Frequ-fac",frequency_factor
+
+  call dlf_constants_get("SOL",speed_of_light)
+  call dlf_constants_get("HARTREE",hartree)
+  call dlf_constants_get("PLANCK",planck)
+  call dlf_constants_get("CM_INV_FOR_AMU",svar)
+  call dlf_constants_get("KBOLTZ",boltz)
+  call dlf_constants_get("AVOGADRO",avog)
+  frequency_factor=svar
+  !print*,"Frequ-fac",frequency_factor
 
   temperature=glob%temperature
 
   write(stdout,*)
   write(stdout,"('Thermochemical analysis')")
   write(stdout,"('Temperature: ',f10.2,' Kelvin')") temperature
+  if (.not. tok) then
+     write(stdout,"('Modes assumed to have zero vibrational frequency:',i3)") glob%nzero
+  end if
   write(stdout,"(' Mode     Eigenvalue Frequency Vib.T.(K)      &
       &  ZPE (H)   Vib. Ene.(H)      - T*S (H)')")
   zpetot=0.D0
   evibtot=0.D0
   svibtot=0.D0
 
-  ! print out frequencies:
-  do ival=1,glob%nivar
-    wavenumber = sqrt(abs(eigval(ival))) * frequency_factor
+  soft_local = -0.1d0
+  if (.not. tok) then
+     ! If frozen atoms were found, trans/rot modes were not projected out
+     ! Instead fall back to a user-specified number of modes to ignore (nzero)
+     ev2=abs(eigval)
+     do ival=1,glob%nzero
+        soft_local=minval(ev2)
+        ev2(minloc(ev2))=huge(1.D0)
+     end do
+  end if
 
-    if(eigval(ival)<0.D0) then
-      wavenumber=-wavenumber
-      write(stdout,"(i5,f15.10,f10.3)") ival,eigval(ival),wavenumber
+  ! print out frequencies:
+  do ival=1, npmodes
+    wavenumber = sqrt(abs(peigval(ival))) * frequency_factor
+
+    if (peigval(ival)<0.D0) then
+       ! Imaginary modes
+       write(stdout,"(i5,f15.10,f10.3,'i')") ival,peigval(ival),wavenumber
+    else if (.not. tok .and. abs(peigval(ival))<=soft_local) then
+       ! User-specified soft modes
+       write(stdout,"(i5,f15.10,f10.3)") ival,peigval(ival),wavenumber
     else
 
       ! convert eig from cm-1 to Hz 
@@ -2063,7 +2507,7 @@ subroutine dlf_thermal()
       svib = svib - dlog(1.D0 - svar)
       svib = svib * boltz
       
-      write(stdout,"(i5,f15.10,2f10.3,3f15.10)") ival,eigval(ival),wavenumber, &
+      write(stdout,"(i5,f15.10,2f10.3,3f15.10)") ival,peigval(ival),wavenumber, &
           vibtemp,zpe/hartree,evib/hartree, -svib/hartree*temperature
       
       zpetot=zpetot+zpe
@@ -2079,7 +2523,297 @@ subroutine dlf_thermal()
   write(*,"('total E vib',f15.5,' J/mol')") evibtot*avog
   write(*,"('total S vib',f15.5,' J/mol/K')") svibtot*avog
   
+  ! write out the hessian and the energy of the "Midpoint" in qts format
+  call dlf_constants_get("AMU",svar2)
+  if(abs(peigval(1))>soft_local.and.peigval(1)<0.D0) then
+    !
+    ! we have a transition state
+    !
+    ! write crossover temperature for tunnelling
+    call dlf_print_wavenumber(eigval(1),.false.)
+    ! format as reactant (only hessian eigenvalues)
+    call write_qts_reactant(glob%nat,glob%nivar,glob%energy,&
+        glob%xcoords,eigval/svar2,"ts")
+    arr2=-1.D0
+    call write_qts_hessian(glob%nat,1,glob%nivar,-1.D0,&
+        glob%energy,glob%xcoords,glob%ihessian/svar2,0.D0,arr2,"ts")
+    if(printf>=4) then
+
+      ! write an xyz file of the transition mode
+      open(unit=55,file="tsmode_mov.xyz")
+      call write_xyz(55,glob%nat,glob%znuc,glob%xcoords)
+      svar=glob%distort
+      call dlf_cartesian_xtoi(glob%nat,glob%nivar,glob%nicore,glob%massweight,glob%xcoords, &
+          glob%xgradient,glob%icoords,glob%igradient)
+      ! this is an abuse of glob%xcoords and glob%icoords. They now contain the moved coords...
+      if(abs(svar)<1.D-7) svar=0.5D0/maxval(abs(eigvec(:,1)))
+      glob%icoords=glob%icoords+svar*eigvec(:,1)
+      call dlf_cartesian_itox(glob%nat,glob%nivar,glob%nicore, &
+           glob%massweight,glob%icoords,glob%xcoords)
+
+      call write_xyz(55,glob%nat,glob%znuc,glob%xcoords)
+      close(55)
+
+      ! also write to result2
+      if(glob%tsrelative) then
+        glob%icoords=svar*eigvec(:,1)
+        call dlf_cartesian_itox(glob%nat,glob%nivar,glob%massweight,glob%icoords,glob%xcoords)
+        call dlf_put_coords(glob%nvar,2,glob%energy,glob%xcoords,glob%iam)         
+      else
+        call dlf_put_coords(glob%nvar,2,glob%energy,glob%xcoords,glob%iam) 
+      end if
+    end if
+  else
+    ! we probably have a reactant
+    ! format as reactant (only hessian eigenvalues)
+    call write_qts_reactant(glob%nat,glob%nivar,glob%energy,&
+        glob%xcoords,eigval/svar2,"")
+    arr2=-1.D0
+    call write_qts_hessian(glob%nat,1,glob%nivar,-1.D0,&
+        glob%energy,glob%xcoords,glob%ihessian/svar2,0.D0,arr2,"rs")
+  end if
+
 end subroutine dlf_thermal
 !!****
 
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* hessian/dlf_thermal_project
+!!
+!! FUNCTION
+!!
+!! * project out non-zero translational and rotational modes from Hessian
+!!
+!! References: 
+!!   1 "Vibrational Analysis in Gaussian", Joseph W. Ochterski
+!!      http://www.gaussian.com/g_whitepap/vib/vib.pdf
+!!   2 The code in OPTvibfrq in opt/vibfrq.f
+!!
+!! Notes
+!!   - Both of the above start from non-mass-weighted Cartesians whereas
+!!     in DL-FIND the Hessian is already mass-weighted 
+!!   - There appears to be an error in Ref 1 eqn 5 as the expression 
+!!     should be multiplied by sqrt(mass), not divided by it (cf ref 2)
+!!     If the uncorrected eqn5 is used then the rotational modes are not 
+!!     fully orthogonal to the translational ones.
+!!
+!! SYNOPSIS
+subroutine dlf_thermal_project(npmodes,peigval,tok)
+!! SOURCE
+  use dlf_parameter_module, only: rk
+  use dlf_global, only: glob,stdout,printl
+  use dlf_hessian
+  implicit none
+  real(rk), external :: ddot
+  integer, intent(out)  :: npmodes ! number of vibrational modes
+  real(rk), intent(out) :: peigval(glob%nivar) ! eigenvalues after projection
+  logical               :: tok
+  real(rk)              :: comcoords(3,glob%nat) ! centre of mass coordinates
+  real(rk)              :: com(3) ! centre of mass
+  real(rk)              :: totmass ! total mass
+  real(rk)              :: moi(3,3) ! moment of inertia tensor
+  real(rk)              :: moivec(3,3) ! MOI eigenvectors
+  real(rk)              :: moival(3) ! MOI eigenvalues
+  real(rk)              :: transmat(glob%nivar,glob%nivar) ! transformation matrix
+  real(rk)              :: px(3), py(3), pz(3)
+  real(rk)              :: smass
+  real(rk), parameter   :: mcutoff = 1.0d-12
+  integer               :: ntrro ! number of trans/rot modes
+  real(rk)              :: test, norm
+  real(rk)              :: trialv(glob%nivar)
+  real(rk)              :: phess(glob%nivar,glob%nivar) ! projected Hessian
+  real(rk)              :: peigvec(glob%nivar, glob%nivar) ! eigenvectors after proj.
+  real(rk)              :: pmodes(glob%nivar, glob%nivar) ! vib modes after proj.
+  integer               :: pstart
+  integer               :: ival, jval, kval, lval, icount
+! **********************************************************************
+  tok=.false.
+  ! Do not continue if any coordinates are frozen
+  if (glob%nivar /= glob%nat * 3 .or. glob%nat==1) then
+     write(stdout,*)
+     write(stdout,"('Frozen atoms found: no modes will be projected out')")
+     npmodes = glob%nivar
+     peigval = eigval
+     return
+  end if
 
+  write(stdout,*)
+  write(stdout,"('Projecting out translational and rotational modes')")
+
+  ! Calculate centre of mass and moment of inertia tensor
+
+  ! xcoords is not fully up to date so convert icoords instead
+  call dlf_cartesian_itox(glob%nat, glob%nivar, glob%nicore, &
+       glob%massweight, glob%icoords, comcoords)
+
+  com(:) = 0.0d0
+  totmass = 0.0d0
+  do ival = 1, glob%nat
+     com(1:3) = com(1:3) + glob%mass(ival) * comcoords(1:3, ival)
+     totmass = totmass + glob%mass(ival)
+  end do
+  com(1:3) = com(1:3) / totmass
+
+  do ival = 1, glob%nat
+     comcoords(1:3, ival) = comcoords(1:3, ival) - com(1:3)
+  end do
+
+  moi(:,:) = 0.0d0
+  do ival = 1, glob%nat
+     moi(1,1) = moi(1,1) + glob%mass(ival) * &
+          (comcoords(2,ival) * comcoords(2,ival) + comcoords(3,ival) * comcoords(3,ival))
+     moi(2,2) = moi(2,2) + glob%mass(ival) * &
+          (comcoords(1,ival) * comcoords(1,ival) + comcoords(3,ival) * comcoords(3,ival))
+     moi(3,3) = moi(3,3) + glob%mass(ival) * &
+          (comcoords(1,ival) * comcoords(1,ival) + comcoords(2,ival) * comcoords(2,ival))
+     moi(1,2) = moi(1,2) - glob%mass(ival) * comcoords(1, ival) * comcoords(2, ival)
+     moi(1,3) = moi(1,3) - glob%mass(ival) * comcoords(1, ival) * comcoords(3, ival)
+     moi(2,3) = moi(2,3) - glob%mass(ival) * comcoords(2, ival) * comcoords(3, ival)
+  end do
+  moi(2,1) = moi(1,2)
+  moi(3,1) = moi(1,3)
+  moi(3,2) = moi(2,3)
+
+  call dlf_matrix_diagonalise(3, moi, moival, moivec)
+
+  if (printl >= 6) then
+     write(stdout,"(/,'Centre of mass'/3f15.5)") com(1:3)
+     write(stdout,"('Moment of inertia tensor')")
+     write(stdout,"(3f15.5)") moi(1:3, 1:3)
+     write(stdout,"('Principal moments of inertia')")
+     write(stdout,"(3f15.5)") moival(1:3)
+     write(stdout,"('Principal axes')")
+     write(stdout,"(3f15.5)") moivec(1:3, 1:3)
+  end if
+
+  ! Construct transformation matrix to internal coordinates
+  ntrro = 6
+  transmat(:, :) = 0.0d0
+  do ival = 1, glob%nat
+     smass = sqrt(glob%mass(ival))
+     kval = 3 * (ival - 1)
+     ! Translational vectors
+     transmat(kval+1, 1) = smass
+     transmat(kval+2, 2) = smass
+     transmat(kval+3, 3) = smass
+     ! Rotational vectors
+     px = sum(comcoords(1:3,ival) * moivec(1:3,1))
+     py = sum(comcoords(1:3,ival) * moivec(1:3,2))
+     pz = sum(comcoords(1:3,ival) * moivec(1:3,3))
+     transmat(kval+1:kval+3, 4) = (py*moivec(1:3,3) - pz*moivec(1:3,2))*smass
+     transmat(kval+1:kval+3, 5) = (pz*moivec(1:3,1) - px*moivec(1:3,3))*smass
+     transmat(kval+1:kval+3, 6) = (px*moivec(1:3,2) - py*moivec(1:3,1))*smass
+  end do
+  ! Normalise vectors and check for linear molecules (one less mode)
+  do ival = 1, 6
+     test = ddot(glob%nivar, transmat(1,ival), 1, transmat(1,ival), 1)
+     if (test < mcutoff) then
+        kval = ival
+        ntrro = ntrro - 1
+        if (ntrro < 5) then
+           write(stdout,"('Error: too few rotational/translation modes')")
+           npmodes = glob%nivar
+           peigval = eigval
+           return
+        end if
+     else
+        norm = 1.0d0/sqrt(test)
+        call dscal(glob%nivar, norm, transmat(1,ival), 1)
+     end if
+  end do
+  if (ntrro == 5 .and. kval /= 6) then
+     transmat(:, kval) = transmat(:, 6)
+     transmat(:, 6) = 0.0d0
+  end if
+  write(stdout,"(/,'Number of translational/rotational modes:',i4)") ntrro
+
+  ! Generate 3N-ntrro other orthogonal vectors 
+  ! Following the method in OPTvibfrq
+  icount = ntrro
+  do ival = 1, glob%nivar
+     trialv(:) = 0.0d0
+     trialv(ival) = 1.0d0
+     do jval = 1, icount
+        ! Test if trial vector is linearly independent of previous set
+        test = -ddot(glob%nivar, transmat(1,jval), 1, trialv, 1)
+        call daxpy(glob%nivar, test, transmat(1,jval), 1, trialv, 1)
+     end do
+     test = ddot(glob%nivar, trialv, 1, trialv, 1)
+     if (test > mcutoff) then
+        icount = icount + 1
+        norm = 1.0d0/sqrt(test)
+        transmat(1:glob%nivar, icount) = norm * trialv(1:glob%nivar)
+     end if
+     if (icount == glob%nivar) exit
+  end do
+  if (icount /= glob%nivar) then
+     write(stdout,"('Error: unable to generate transformation matrix')")
+     npmodes = glob%nivar
+     peigval = eigval
+     return
+  end if
+  if (printl >= 6) then
+     write(stdout,"(/,'Transformation matrix')")
+     call dlf_matrix_print(glob%nivar, glob%nivar, transmat)
+  end if
+
+  ! Apply transformation matrix: D(T) H D
+  ! Use peigvec as scratch to store intermediate
+  phess(:,:) = 0.0d0
+  peigvec(:,:) = 0.0d0
+  call dlf_matrix_multiply(glob%nivar, glob%nivar, glob%nivar, &
+       1.0d0, glob%ihessian, transmat, 0.0d0, peigvec)
+  ! Should alter dlf_matrix_multiply to allow transpose option to be set...
+  transmat = transpose(transmat)
+  call dlf_matrix_multiply(glob%nivar, glob%nivar, glob%nivar, &
+       1.0d0, transmat, peigvec, 0.0d0, phess)
+  transmat = transpose(transmat)
+
+  if (printl >= 6) then
+     write(stdout,"(/,'Hessian matrix after projection:')")
+     call dlf_matrix_print(glob%nivar, glob%nivar, phess)
+  end if
+
+  ! Find eigenvalues of Nvib x Nvib submatrix
+  peigval(:) = 0.0d0
+  peigvec(:,:) = 0.0d0
+  npmodes = glob%nivar - ntrro
+  pstart = ntrro + 1
+  call dlf_matrix_diagonalise(npmodes, phess(pstart:glob%nivar, pstart:glob%nivar), &
+       peigval(1:npmodes), peigvec(1:npmodes,1:npmodes))
+
+  if (printl >= 6) then
+     write(stdout,"('Vibrational submatrix eigenvalues:')")
+     write(stdout,"(12f9.5)") peigval(1:npmodes)
+     write(stdout,"('Vibrational submatrix eigenvectors:')")
+     call dlf_matrix_print(npmodes, npmodes, peigvec(1:npmodes, 1:npmodes))
+  end if
+
+  ! Print out normalised normal modes
+  ! These are in non-mass-weighted Cartesians (division by smass)
+  pmodes(:,:) = 0.0d0
+  do kval = 1, glob%nivar
+     do ival = 1, npmodes
+        do jval = 1, npmodes
+           pmodes(kval, ival) = pmodes(kval, ival) + &
+                transmat(kval, ntrro + jval) * peigvec(jval, ival)
+        end do
+        lval = (kval - 1) / 3 + 1
+        smass = sqrt(glob%mass(lval))
+        pmodes(kval, ival) = pmodes(kval, ival) / smass
+     end do
+  end do
+  do ival = 1, npmodes
+     test = ddot(glob%nivar, pmodes(1,ival), 1, pmodes(1,ival), 1)
+     norm = 1.0d0 / sqrt(test)
+     call dscal(glob%nivar, norm, pmodes(1,ival), 1)
+  end do
+
+  if (printl >= 4) then
+     write(stdout,"(/,'Normalised normal modes (Cartesian coordinates):')")
+     call dlf_matrix_print(glob%nivar, npmodes, pmodes(1:glob%nivar, 1:npmodes))
+  end if
+  
+  tok=.true.
+
+end subroutine dlf_thermal_project
+!!****

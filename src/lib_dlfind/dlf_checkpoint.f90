@@ -16,10 +16,13 @@
 !!   %%   dlf_lbfgs.f90                                                %%
 !!   %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 !!
+!!  Issue: An unformatted restart file written by a binary using integer(8)
+!!  can not be read by a binary using integer(4) - and vice versa.
+!!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -117,7 +120,7 @@ end module dlf_checkpoint
 !! SYNOPSIS
 subroutine dlf_checkpoint_read(status,tok)
 !! SOURCE
-  use dlf_parameter_module, only: rk
+  use dlf_parameter_module, only: rk,ik
   use dlf_global, only: glob,stdout,printl
   use dlf_stat, only: stat
   use dlf_checkpoint, only: tchkform, read_separator
@@ -160,11 +163,32 @@ subroutine dlf_checkpoint_read(status,tok)
 
   if(nvar/=glob%nvar) then
     write(stdout,10) "Different system size"
+    write(stdout,*) "nvar read     ",nvar
+    write(stdout,*) "nvar expected ",glob%nvar
+    write(stdout,*) "Kind of integers in current code",ik
+    if(nvar>huge(1_4).and..not.tchkform ) then
+      if(ik==8) then
+        write(stdout,*) "This may mean that the checkpoint file was written by a DL-FIND version "
+        write(stdout,*) "using integer(4) while the current one uses integer(8)."
+        write(stdout,*) "A solution may be to recompile the current code using integer(4)."
+      end if
+    end if
+    
     close(100)
     return
   end if
   if(iopt/=glob%iopt) then
     write(stdout,10) "Different optimiser (iopt)"
+    write(stdout,*) "iopt read     ",iopt
+    write(stdout,*) "iopt expected ",glob%iopt
+    write(stdout,*) "Kind of integers in current code",ik
+    if(iopt==0.and..not.tchkform) then
+      if(ik==4) then
+        write(stdout,*) "This may mean that the checkpoint file was written by a DL-FIND version "
+        write(stdout,*) "using integer(8) while the current one uses integer(4)."
+        write(stdout,*) "A solution may be to recompile the current code using integer(8)."
+      end if
+    end if
     close(100)
     return
   end if
@@ -382,7 +406,18 @@ subroutine dlf_checkpoint_write(status)
 ! Only want one processor to do the writing; that processor must know 
 ! all the necessary information.
   if (glob%iam /= 0) return
-
+  ! Q: Should task-farming really be treated differently?
+  ! It might be better for each 
+  ! workgroup to write its own checkpoint so task-farming 
+  ! runs could restart at any point too (at the cost of extra
+  ! I/O and disk space) - this could be useful for a
+  ! large standalone FD Hessian calc for example.
+  ! If this were done then ntasks should be 
+  ! saved to chk files as this would need to be consistent on restart.
+  ! In most sophisticated solution each workgroup would write 
+  ! only the data which differed between workgroups.
+  ! NB: File names would have to be labelled by workgroup too 
+  ! as we cannot assume each has its own scratch directory.
   if(tchkform) then
     open(unit=100,file="dlf_global.chk",form="formatted")
     call write_separator(100,"Global sizes")

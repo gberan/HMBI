@@ -4,8 +4,8 @@
 !
 !
 !
-!   Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!   Tom Keal (keal@mpi-muelheim.mpg.de)
+!   Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!   Tom Keal (thomas.keal@stfc.ac.uk)
 !   Joanne Carr (joanne.carr@stfc.ac.uk)
 !
 !   This file is part of DL-FIND.
@@ -52,7 +52,8 @@
 
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
-    tolerance,printl,maxcycle,maxene,tatoms,icoord, &
+    tolerance,tolerance_max_g,tolerance_rms_g,printl,maxcycle,maxene, &
+    tatoms,icoord, &
     iopt,iline,maxstep,scalestep,lbfgs_mem,nimage,nebk,dump,restart,&
     nz,ncons,nconn,update,maxupd,delta,soft,inithessian,carthessian,tsrel, &
     maxrot,tolrot,nframe,nmass,nweight,timestep,fric0,fricfac,fricp, &
@@ -60,7 +61,9 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
     printf,tolerance_e,distort,massweight,minstep,maxdump,task,temperature, &
     po_pop_size,po_radius,po_contraction,po_tolerance_r,po_tolerance_g, &
     po_distribution,po_maxcycle,po_init_pop_size,po_reset,po_mutation_rate, &
-    po_death_rate,po_scalefac,po_nsave,ntasks,tdlf_farm,n_po_scaling)
+    po_death_rate,po_scalefac,po_nsave,ntasks,tdlf_farm,n_po_scaling, &
+    neb_climb_test,neb_freeze_test,nzero, coupled_states, qtsflag, &
+    imicroiter, maxmicrocycle, micro_esp_fit )
 
   use dlf_parameter_module, only: rk
   use dlfind_module
@@ -75,6 +78,8 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   integer   ,intent(inout)   :: spec(nspec)  ! specifications like fragment or frozen
   integer   ,intent(out)     :: ierr
   real(float)  ,intent(inout)   :: tolerance
+  real(float)  ,intent(inout)   :: tolerance_max_g
+  real(float)  ,intent(inout)   :: tolerance_rms_g
   real(float)  ,intent(inout)   :: tolerance_e
   integer   ,intent(inout)   :: printl
   integer   ,intent(inout)   :: maxcycle
@@ -141,6 +146,14 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   integer   ,intent(inout)   :: ntasks
   integer   ,intent(inout)   :: tdlf_farm
   integer   ,intent(inout)   :: n_po_scaling
+  real(float)  ,intent(inout)   :: neb_climb_test
+  real(float)  ,intent(inout)   :: neb_freeze_test
+  integer   ,intent(inout)   :: nzero
+  integer   ,intent(inout)   :: coupled_states
+  integer   ,intent(inout)   :: qtsflag
+  integer   ,intent(inout)   :: imicroiter
+  integer   ,intent(inout)   :: maxmicrocycle
+  integer   ,intent(inout)   :: micro_esp_fit
 
   ! local variables
 ! **********************************************************************
@@ -193,6 +206,8 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   printf= dlf_printf
   tolerance= dlf_tolerance
   tolerance_e= dlf_tolerance_e
+  tolerance_max_g = dlf_tolerance_max_g
+  tolerance_rms_g = dlf_tolerance_rms_g
   iopt= dlf_iopt
   iline= dlf_iline
   maxstep= dlf_maxstep
@@ -209,6 +224,11 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   icoord= dlf_icoord
   soft= dlf_soft
   nebk= dlf_nebk
+
+! new options, not yet implemented in CRYSTAL
+  neb_climb_test= -1.0d0
+  neb_freeze_test= -1.0d0
+
   maxrot= dlf_maxrot
   tolrot= dlf_tolrot
   tsrel = dlf_tsrel
@@ -255,6 +275,9 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   n_po_scaling = dlf_n_po_scaling
 
   ntasks = dlf_ntasks
+  tdlf_farm = 0
+  nzero=0 ! new option, not yet implemented in crystal
+  coupled_states=1 ! new option, not yet implemented in crystal
 
 end subroutine dlf_get_params
 

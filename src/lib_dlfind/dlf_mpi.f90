@@ -8,8 +8,8 @@
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!  Joanne Carr (j.m.carr@dl.ac.uk)
 !!
 !!  This file is part of DL-FIND.
@@ -226,7 +226,7 @@ subroutine dlf_make_taskfarm(tdlf_farm)
           glob%iam_in_task, glob%mytask, task_comm, ax_tasks_comm)
   else
      if (mod(glob%nprocs, glob%ntasks) /= 0) call dlf_fail("Number of &
-                        &processors not divisible by number of tasks requested")
+                        &processors not divisible by number of workgroups requested")
 
      glob%nprocs_per_task = glob%nprocs / glob%ntasks
 
@@ -262,14 +262,14 @@ subroutine dlf_make_taskfarm(tdlf_farm)
                            glob%mytask, task_comm, ax_tasks_comm)
   end if
 
-! Write some info about the taskfarms to standard out
+! Write some debug info about the taskfarm to standard out
 
-  write(stdout,'(1x,a,i10,a)')"In dlf_make_taskfarm: there are ",glob%ntasks,&
-                              " taskfarms"
-  write(stdout,'(1x,a,i10)')"My task farm is indexed ",glob%mytask
-  write(stdout,'(1x,a,i10,a)')"I have rank ",glob%iam_in_task," in my task farm"
-  write(stdout,'(1x,a,i10,a)')"There are ",glob%nprocs_per_task," processors &
-                              &in my task farm"
+!  write(stdout,'(1x,a,i10,a)')"In dlf_make_taskfarm: there are ",glob%ntasks,&
+!                              " workgroups"
+!  write(stdout,'(1x,a,i10)')"My workgroup is indexed ",glob%mytask
+!  write(stdout,'(1x,a,i10,a)')"I have rank ",glob%iam_in_task," in my workgroup"
+!  write(stdout,'(1x,a,i10,a)')"There are ",glob%nprocs_per_task," processors &
+!                              &in my workgroup"
 
 end subroutine dlf_make_taskfarm
 !!****
@@ -287,7 +287,7 @@ end subroutine dlf_make_taskfarm
 !!
 !! INPUTS
 !!
-!! stat%sene
+!! stat%pene
 !! glob%ntasks
 !! glob%nprocs
 !! glob%iam
@@ -311,14 +311,16 @@ subroutine dlf_mpi_counters
 
   if (glob%ntasks == 1 .or. glob%nprocs == 1) return
 
-! First do an mpi_gather to get the sene's from all procs
+! First do an mpi_gather to get the pene's from all procs
+! Note this is not necessarily equal to stat%sene as some energy
+! evaluations may be duplicated across workgroups
 
   iproc = -1
   if (glob%iam == 0) iproc = glob%iam_in_task
   call dlf_global_int_bcast(iproc, 1, 0)
 
   ene_count(:) = 0
-  call dlf_tasks_int_gather(stat%sene, 1, ene_count, glob%ntasks, iproc)
+  call dlf_tasks_int_gather(stat%pene, 1, ene_count, glob%ntasks, iproc)
 
 ! Now calculate the stats and do some writing
   if (glob%iam == 0 .and. printl > 0) then
@@ -330,14 +332,20 @@ subroutine dlf_mpi_counters
      lowest_count = minval(ene_count)
      highest_count = maxval(ene_count)
 
-     write(stdout,'(a)')"Statistics over the taskfarms:"
-     write(stdout,'(a)')"Evaluations of the total energy"
-     write(stdout,2000) "Total number",total_count
-     write(stdout,2000) "Mean number",nint(mean_count)
-     write(stdout,2000) "Standard deviation",nint(sigma_count)
-     write(stdout,2000) "Lowest number per farm",lowest_count
-     write(stdout,2000) "Highest number per farm",highest_count
-     write(stdout,'(a)')"Statistics over the taskfarms: end"
+     write(stdout,'(a)')"Task-farming statistics:"
+     write(stdout,2000) "Number of workgroups", glob%ntasks
+
+     if (stat%ccycle > 0) then
+        write(stdout,'(a)')"Evaluations of the total energy"
+        write(stdout,2000) "Total number (incl. duplicates)",total_count
+        write(stdout,2000) "Mean number",nint(mean_count)
+        write(stdout,2000) "Standard deviation",nint(sigma_count)
+        write(stdout,2000) "Lowest number per workgroup",lowest_count
+        write(stdout,2000) "Highest number per workgroup",highest_count
+        write(stdout,2000) "Total number (excl. duplicates)",stat%sene
+     end if
+
+     write(stdout,'(a)')"Task-farming statistics: end"
 
   end if  
 
@@ -403,14 +411,14 @@ subroutine dlf_mpi_memory(sto,maxsto)
      lowest_stored = minval(stored)
      highest_stored = maxval(stored)
 
-     write(stdout,'(a)')"Statistics over the taskfarms:"
+     write(stdout,'(a)')"Task-farming statistics:"
      write(stdout,'(a)')"Current memory usage (/kB)"
      write(stdout,1000) "Total",dble(total_stored)/1024.D0
      write(stdout,1000) "Mean",mean_stored/1024.D0
      write(stdout,1000) "Standard deviation",sigma_stored/1024.D0
      write(stdout,1000) "Lowest",dble(lowest_stored)/1024.D0
      write(stdout,1000) "Highest",dble(highest_stored)/1024.D0
-     write(stdout,'(a)')"Statistics over the taskfarms: end"
+     write(stdout,'(a)')"Task-farming statistics: end"
 
   end if
 
@@ -425,14 +433,14 @@ subroutine dlf_mpi_memory(sto,maxsto)
      lowest_stored = minval(stored)
      highest_stored = maxval(stored)
 
-     write(stdout,'(a)')"Statistics over the taskfarms:"
+     write(stdout,'(a)')"Task-farming statistics:"
      write(stdout,'(a)')"Maximum memory usage (/kB):"
      write(stdout,1000) "Total",dble(total_stored)/1024.D0
      write(stdout,1000) "Mean",mean_stored/1024.D0
      write(stdout,1000) "Standard deviation",sigma_stored/1024.D0
      write(stdout,1000) "Lowest",dble(lowest_stored)/1024.D0
      write(stdout,1000) "Highest",dble(highest_stored)/1024.D0
-     write(stdout,'(a)')"Statistics over the taskfarms: end"
+     write(stdout,'(a)')"Task-farming statistics: end"
 
   end if
 

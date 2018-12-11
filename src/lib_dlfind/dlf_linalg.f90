@@ -9,8 +9,8 @@
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -98,4 +98,58 @@ subroutine dlf_matrix_diagonalise(N,a,evals,evecs)
 ! **********************************************************************
   idum = array_diagonalise(a,evecs,evals,n,n,n,.true.)
 end subroutine dlf_matrix_diagonalise
+!!****
+
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* linalg/dlf_matrix_print
+!!
+!! FUNCTION
+!!
+!! Print out a matrix 
+!!
+!! M = number of rows
+!! N = number of columns
+!! a = M x N array
+!!
+!! SYNOPSIS
+subroutine dlf_matrix_print(M,N,a)
+  use dlf_parameter_module, only: rk
+  use dlf_global, only: stdout
+  implicit none
+  integer  ,intent(in)    :: M,N 
+  real(rk) ,intent(in)    :: a(M,N)
+!! SOURCE
+! **********************************************************************
+  integer :: imin, imax, max, i, j
+  logical :: highprec
+
+  highprec = .false.
+
+  if (highprec) then
+     max = 7
+  else
+     max = 12
+  end if
+  imax = 0
+
+  do while(imax < N)
+     imin = imax + 1
+     imax = imax + max
+     if (imax > N) imax = N
+     write(stdout, *)
+     if (highprec) then
+        write(stdout, '(6X,7(6X,I3,6X))') (i,i=imin,imax)
+     else
+        write(stdout, '(6X,12(3X,I3,3X))') (i,i=imin,imax)
+     end if
+     write(stdout, *)
+     do j = 1, M
+        if (highprec) then
+           write(stdout, '(I5,1X,7F15.10)') j, (a(j,i),i=imin,imax)
+        else
+           write(stdout, '(I5,1X,12F9.5)') j, (a(j,i),i=imin,imax)
+        end if
+     end do
+  end do
+end subroutine dlf_matrix_print
 !!****

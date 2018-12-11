@@ -4,14 +4,19 @@
 ! **  1 - Mueller-Brown potential (2 Dim)                             **
 ! **  2 - 3 Lennard-Jones Atoms (9 Dim)                               **
 ! **  3 - 100 Lennard-Jones Atoms (300 Dim)                           **
-! **                                                                  **
+! **  4 - Eckart Barrier (1 Dim)                                      **
+! **  5 - Quartic potential (1 Dim)                                   **
+! **  6 - Vibrational sufaces by molpro                               **
+! **  7 - A potential for which the MEP splits in two (2 Dim)         **
+! **        (by Judith Rommel)                                        **
+! **  8 - A polynomial potential in more dimensions                   **
 ! **                                                                  **
 ! **********************************************************************
 
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -31,11 +36,58 @@
 !!
 
 module driver_module
+  use dlf_parameter_module, only: rk
+ ! use vib_pot !uncommented to have a running system
   integer,parameter :: isystem=3 ! decide which system to run on
+! variables for non-continuous differentiable MEP potential
+  real(rk) :: smallbarvar !parameter to control the hight of the small barrier
 end module driver_module
+
+module driver_parameter_module
+  use dlf_parameter_module
+  ! variables for Mueller-Brown potential
+  real(rk) :: acappar(4),apar(4),bpar(4),cpar(4),x0par(4),y0par(4)
+  ! variables for Lennard-Jones potentials
+  real(rk),parameter :: epsilon=1.D-1
+  real(rk),parameter :: sigma=1.D0
+!!$  ! variables for the Eckart potential (1D), taken from Andri's thesis
+  real(rk),parameter :: Va= -0.191D0*0.0367493254D0 !2nd factor is conversion to E_h from eV
+  real(rk),parameter :: Vb=  1.343D0*0.0367493254D0 !2nd factor is conversion to E_h from eV
+  real(rk),parameter :: alpha= 5.762D0/1.889725989D0 !2nd factor is for conversion from Angstrom to Bohr (a.u.)
+
+  ! modified Eckart potential to have a comparison
+!!$  REAL(8), PARAMETER :: Va= -0.091D0*0.0367493254D0  !2nd factor is conversion to E_h from eV
+!!$  REAL(8), PARAMETER :: Vb=  1.343D0*0.0367493254D0  !2nd factor is conversion to E_h from eV
+!!$  REAL(8), PARAMETER :: alpha =20.762D0/1.889725989D0 
+!!$  real(rk),parameter :: Va= -0.191D0*0.0367493254D0 !2nd factor is conversion to E_h from eV
+!!$  real(rk),parameter :: Vb=  1.343D0*0.0367493254D0 !2nd factor is conversion to E_h from eV
+!!$  real(rk),parameter :: alpha= 20.762D0/1.889725989D0 !2nd factor is for conversion from Angstrom to Bohr (a.u.)
+
+  ! "fitted" to Glum SN-1-Glu, E->D
+!  real(rk),parameter :: Va= 0.D0 ! symmetric (real: almost symmetric)
+!  real(rk),parameter :: Vb= 4.D0*74.81D0/2625.5D0 ! 4*barrier for symmetric
+!  real(rk),parameter :: alpha= 2.38228D0 
+
+!!$  ! Eckart for comparison with scattering
+!!$  real(rk),parameter :: Va= -100.D0
+!!$  real(rk),parameter :: Vb= 373.205080756888D0
+!!$  real(rk),parameter :: alpha= 7.07106781186547D0
+
+  real(rk) :: xvar,yvar
+  ! quartic potential
+  real(rk),parameter :: V0=1.D0
+  real(rk),parameter :: X0=5.D0
+  ! polymul
+  integer ,parameter :: num_dim=3 ! should be a multiple of 3
+  real(rk),parameter :: Ebarr=80.D0/2526.6D0  ! >0
+  real(rk) :: dpar(num_dim)
+!!$  real(rk),parameter :: vdamp=15.D0 ! change of frequencies towards TS. +inf -> no change
+end module driver_parameter_module
 
 program main
   use driver_module
+  use driver_parameter_module
+  !use vib_pot
   implicit none
   integer :: ivar
 
@@ -43,22 +95,39 @@ program main
                             ! can be present for a serial build
   call dlf_output(6,0)
 
+  call driver_init
+
   select case (isystem)
   case (1)
     !call system ("rm -f dimer.xy")
     !do ivar=1,100
-      call dl_find(2,1,0,1)
+!      call dl_find(3,1,1,1) ! no frame in coords2
+      call dl_find(3,4,1,1) ! one frame in coords2
+!      call dl_find(3,16,1,1) ! 5 frames in coords2
+!      call dl_find(3,58,1,1) ! 19 frames in coords2
     !  call system ("echo '' >> dimer.xy")
     !end do
   case (2)
    ! call dl_find(12,1,4)
-    call dl_find(12,16,4,1) ! 1 frame + masses
+    call dl_find(12,16,8,1) ! 1 frame + masses
   case (3)
     !call dl_find(99,1,33)
     !call dl_find(30,1,15)
 
     ! LJ-particle surface with one atom hopping on it
-    call dl_find(21,35,7,1) ! 1 frame + weigths + masses
+    call dl_find(21,35,14,1) ! 1 frame + weigths + masses
+
+  case (4,5)
+    call dl_find(3,4,2,1)
+
+  case (6)
+    call dl_find(12,16,8,1) ! 1 frame + masses
+    !call read_pot_destroy
+  case (7)
+    call dl_find(3,4,1,1) ! one frame in coords2
+
+  case (8)
+   call dl_find(num_dim,num_dim+num_dim/3,num_dim/3,1) ! one frame + masses in coords2
 
   case default
     call dlf_mpi_finalize() ! only necessary for a parallel build;
@@ -84,13 +153,18 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
     nz,ncons,nconn,update,maxupd,delta,soft,inithessian,carthessian,tsrel, &
     maxrot,tolrot,nframe,nmass,nweight,timestep,fric0,fricfac,fricp, &
     imultistate, state_i,state_j,pf_c1,pf_c2,gp_c3,gp_c4,ln_t1,ln_t2, &
-    printf,tolerance_e,distort,massweight,minstep,maxdump,task,temperature, &
+    printf,tolerance_e,tolerance_max_g,tolerance_rms_g, &
+    distort,massweight,minstep,maxdump,task,temperature, &
     po_pop_size,po_radius,po_contraction,po_tolerance_r,po_tolerance_g, &
     po_distribution,po_maxcycle,po_init_pop_size,po_reset,po_mutation_rate, &
-    po_death_rate,po_scalefac,po_nsave,ntasks,tdlf_farm,n_po_scaling)
-
+    po_death_rate,po_scalefac,po_nsave,ntasks,tdlf_farm,n_po_scaling, &
+    neb_climb_test, neb_freeze_test, &
+    nzero, coupled_states, qtsflag,&
+    imicroiter, maxmicrocycle, micro_esp_fit)
   use dlf_parameter_module, only: rk
+  use driver_parameter_module
   use driver_module
+  !use vib_pot
   implicit none
   integer   ,intent(in)      :: nvar 
   integer   ,intent(in)      :: nvar2
@@ -103,6 +177,8 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   integer   ,intent(out)     :: ierr
   real(rk)  ,intent(inout)   :: tolerance
   real(rk)  ,intent(inout)   :: tolerance_e
+  real(rk)  ,intent(inout)   :: tolerance_max_g
+  real(rk)  ,intent(inout)   :: tolerance_rms_g
   integer   ,intent(inout)   :: printl
   integer   ,intent(inout)   :: maxcycle
   integer   ,intent(inout)   :: maxene
@@ -168,7 +244,14 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   integer   ,intent(inout)   :: ntasks
   integer   ,intent(inout)   :: tdlf_farm
   integer   ,intent(inout)   :: n_po_scaling
-
+  real(rk)  ,intent(inout)   :: neb_climb_test
+  real(rk)  ,intent(inout)   :: neb_freeze_test
+  integer   ,intent(inout)   :: nzero
+  integer   ,intent(inout)   :: coupled_states
+  integer   ,intent(inout)   :: qtsflag
+  integer   ,intent(inout)   :: imicroiter
+  integer   ,intent(inout)   :: maxmicrocycle
+  integer   ,intent(inout)   :: micro_esp_fit
   ! local variables
   real(rk)                   :: svar
   integer                    :: iat,jat
@@ -182,7 +265,7 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
 ! **********************************************************************
   ierr=0
   tsrel=1
-  
+
   print*,"External sizes:",nvar,nvar2,nspec
   ! Minima of Mueller-Brown potential:
   ! left:   -0.5582236346340204   1.4417258418038705   energy:  -0.6919788547639341
@@ -211,27 +294,111 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   nconn=0
 
   coords(:)=-1.D0
-
+  spec(:)=0
   
 !!$  ! Near Saddle point:
 ! coords=(/ -0.6D0, 0.6D0 /) 
 
   coords2(:)=-1.D0
   if(isystem==1) then
-!!$    coords(:)=(/-0.5582236D0,1.4417258D0/)
-!!$    !coords(:)=(/-0.05001082294D0, 0.4666941D0/)
-!!$    coords2(:)=(/0.6234994D0,  0.0280377585D0/)
-!!$
-    ! somewhere near minima
-    !coords(:)=(/-0.3D0,0.6D0/)
-    !coords2(:)=(/-0.31D0,0.590D0/)
-    call random_number(coords)
-    coords(1)=coords(1)-0.7D0
-    coords(2)=coords(2)*1.4D0
-    !call random_number(coords2)
-    !coords2=coords+(/-0.733D0, 0.680D0/)! coords2-0.5D0
-    !coords(:)=(/-0.05001082294D0, 0.4666941D0/)
-    coords(:)=(/0.6D0,  0.1D0/)
+
+    nzero=0
+    coords=(/ -0.8220015634663578D0,   0.624312796202859D0, 0.D0 /)! main saddle point
+
+!    coords=(/ -0.050010822944531706D0, 0.4666941048659066D0 , 0.D0 /)! middle minimum
+!!$!    coords=(/ 0.623499404927291D0, 0.028037758526434815D0 , 0.D0 /)! right minimum
+!!$!    coords=(/ 0.05D0,   0.7D0, 0.D0 /)
+!!$    ! Main TS and direction
+!!$    nframe=1
+!!$    coords2(1:3)=(/ 0.8D0 ,  -0.5D0,  0.D0 /)
+
+    ! Main minima
+!    coords=(/ -0.5582236346340204D0,   1.4417258418038705D0, 0.D0 /)
+    nframe=1
+    coords2(1:3)=(/ 0.623499404927291D0,    0.028037758526434815D0, 0.D0 /)
+
+!!$    ! 6 points converged at 0.8 T_c, but with non-doubled path
+!!$    nframe=5
+    ! pairwise identical
+!!$    coords=(/  -0.4493311064542917D0 , 0.5419479158349173D0 , 0.D0 /)
+!!$    coords2(1:nframe*3)=(/ &
+!!$        -0.5952499491610727D0 , 0.7072076082065596D0 , 0.D0 , &
+!!$        -0.74556821224306D0 , 1.1707853456208879D0 , 0.D0 , &
+!!$        -0.74556821224306D0 , 1.1707853456208879D0 , 0.D0 , &
+!!$        -0.5952499491610727D0 , 0.7072076082065596D0 , 0.D0 , &
+!!$        -0.4493311064542917D0 , 0.5419479158349173D0 , 0.D0 /)
+!!$    ! turning points non-doubled
+!!$    coords=(/ -0.3578971447649985D0 , 0.501608351688023D0 , 0.D0 /)
+!!$    coords2(1:nframe*3)=(/ &
+!!$        -0.43170926134006843D0 , 0.5293693376680748D0 , 0.D0 , &
+!!$        -0.5875518956609882D0 , 0.6297820581123532D0 , 0.D0 ,&
+!!$        -0.7976650261570393D0 , 0.8923927204798402D0 , 0.D0 ,&
+!!$        -0.5875518956609882D0 , 0.6297820581123532D0 , 0.D0 ,&
+!!$        -0.43170926134006843D0 , 0.5293693376680748D0 , 0.D0 /)
+
+
+!!$    ! 20 points approx. converged at 7.D4 K This was used for the P-RFO convergence tests
+!!$    coords=(/    -0.8426643D0 , 0.9151530D0 , 0.D0 /)
+!!$    nframe=19
+!!$    coords2(1:nframe*3)=(/ &
+!!$        -0.8341730D0 , 0.9016234D0 , 0.D0, &
+!!$        -0.8167761D0 , 0.8750182D0 , 0.D0, &
+!!$        -0.7902620D0 , 0.8368417D0 , 0.D0, &
+!!$        -0.7552811D0 , 0.7902725D0 , 0.D0, &
+!!$        -0.7140001D0 , 0.7401491D0 , 0.D0, &
+!!$        -0.6694554D0 , 0.6916154D0 , 0.D0, &
+!!$        -0.6245622D0 , 0.6483821D0 , 0.D0, &
+!!$        -0.5814185D0 , 0.6121439D0 , 0.D0, &
+!!$        -0.5412253D0 , 0.5829760D0 , 0.D0, &
+!!$        -0.5046521D0 , 0.5601122D0 , 0.D0, &
+!!$        -0.4719413D0 , 0.5424788D0 , 0.D0, &
+!!$        -0.4431635D0 , 0.5290462D0 , 0.D0, &
+!!$        -0.4182906D0 , 0.5188846D0 , 0.D0, &
+!!$        -0.3972339D0 , 0.5112838D0 , 0.D0, &
+!!$        -0.3798929D0 , 0.5056672D0 , 0.D0, &
+!!$        -0.3661631D0 , 0.5016168D0 , 0.D0, &
+!!$        -0.3559567D0 , 0.4988193D0 , 0.D0, &
+!!$        -0.3491923D0 , 0.4970686D0 , 0.D0, &
+!!$        -0.3458243D0 , 0.4962209D0 , 0.D0 &
+!!$        /)
+
+    ! right minimum for rates
+!    coords=(/0.623499404927291D0,    0.028037758526434815D0, 0.D0 /)
+
+!!$    ! 20 points approx. converged at 9.D4 K
+!!$    coords=(/    -0.8426643D0 , 0.9151530D0 , 0.D0 /)
+!!$    nframe=19
+!!$    coords2(1:nframe*3)=(/ &
+!!$        -0.8862898D0 , 0.7529666D0 , 0.D0, &
+!!$        -0.8830748D0 , 0.7491050D0 , 0.D0, &
+!!$        -0.8767162D0 , 0.7415692D0 , 0.D0, &
+!!$        -0.8673471D0 , 0.7307005D0 , 0.D0, &
+!!$        -0.8551798D0 , 0.7169933D0 , 0.D0, &
+!!$        -0.8405764D0 , 0.7011254D0 , 0.D0, &
+!!$        -0.8239636D0 , 0.6838182D0 , 0.D0, &
+!!$        -0.8059024D0 , 0.6658717D0 , 0.D0, &
+!!$        -0.7869926D0 , 0.6480244D0 , 0.D0, &
+!!$        -0.7678376D0 , 0.6309045D0 , 0.D0, &
+!!$        -0.7490010D0 , 0.6149905D0 , 0.D0, &
+!!$        -0.7309768D0 , 0.6006029D0 , 0.D0, &
+!!$        -0.7141770D0 , 0.5879203D0 , 0.D0, &
+!!$        -0.6989314D0 , 0.5770092D0 , 0.D0, &
+!!$        -0.6854953D0 , 0.5678584D0 , 0.D0, &
+!!$        -0.6740516D0 , 0.5604040D0 , 0.D0, &
+!!$        -0.6647626D0 , 0.5545798D0 , 0.D0, &
+!!$        -0.6577119D0 , 0.5502927D0 , 0.D0, &
+!!$        -0.6529801D0 , 0.5474803D0 , 0.D0, &
+!!$        -0.6506084D0 , 0.5460899D0 , 0.D0 &
+!!$        /)
+
+    nmass=1
+    coords2(nvar2)=1.0078250321D0 ! mass: last entry in coords2, here using mass of protium
+!    coords2(nvar2)=10.00 ! mass: last entry in coords2, here using mass of more 
+
+
+!    print*,"nspec",nspec
+    spec(1)=-4
+
   end if
   if(isystem==2) then
     ! minimum distance is 1.1224620
@@ -307,6 +474,18 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
     coords(3)=svar*0.7D0
     !coords(9)=-0.3D0
     !coords(18)=-0.3D0
+
+    ! stationary point with all atoms free:
+!!$    coords(:) = (/&
+!!$        1.1848983D0,   0.5065666D0,   0.5943077D0,&
+!!$        0.2522962D0,   0.1414045D0,   0.0995254D0,&
+!!$        1.2142701D0,   0.1259186D0,  -0.4664030D0,&
+!!$        2.0938589D0,  -0.0116502D0,   0.2075193D0,&
+!!$        0.2244601D0,   1.0502398D0,   0.7566075D0,&
+!!$        0.7204213D0,   1.1023797D0,  -0.2424304D0,&
+!!$        1.8302904D0,   1.0137577D0,  -0.1634031D0 /)
+
+
     nmass=7
     nframe=1
     coords2(:)=1.D0
@@ -324,6 +503,10 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
     spec(1)=1
     spec(3)=1
     spec(6)=1
+    spec(:)=0 ! all free for now
+
+    ! microiterative: last two are inner region
+    spec(13:14)=1
 
     ! weights
     nweight=7
@@ -335,38 +518,253 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
     !coords2(29:35) are masses
     coords2(29:35)=10.D0
 !    coords2(29:29)=1.D0
+
+  end if
+
+  ! Eckart barrier
+  if(isystem==4) then
+
+    coords=0.D0
+    coords2=0.D0
+
+   ! coords(1)=-2.0D0
+
+    nframe=1
+    coords2(1:3)=(/ 1.D0 ,  0.D0,  0.D0 /)
+
+    nzero=0
+    nmass=1
+    coords2(nvar2)=1.0078250321D0 ! mass: last entry in coords2, here using mass of protium
+  !  coords2(nvar2)=2.013553212D0 ! mass: last entry in coords2, here using mass of deuterium
+  !  coords2(nvar2)=3.D0
+!    coords2(nvar2)=0.5D0/1.8228884842645E+03 ! mass: leads to a mass of 0.5 in atomic units
+
+    spec(1)=-34
   end if
 
   tolerance=-4.5D-1 ! negative: default settings
+  tolerance_max_g = 4.5D-4
+  tolerance_rms_g = 3.000D-3
+
+  ! Quartic potential
+  if(isystem==5) then
+
+    coords=0.D0
+    coords2=0.D0
+
+    ! Saddle point:
+  !  coords(1)=2.D0/3.D0
+
+    nframe=1
+    coords2(1:3)=(/ 1.D0 ,  0.D0,  0.D0 /)
+
+    nzero=0
+    nmass=1
+   ! coords2(nvar2)=1.0078250321D0 ! mass: last entry in coords2, here using mass of protium
+    coords2(nvar2)=0.5D0/1.8228884842645E+03 ! mass: leads to a mass of 1 in atomic units
+    spec(1)=-34
+
+  end if
+
+  ! Vibrational potential
+  if(isystem==6) then
+
+!N          0.0000000000        0.0000000000       -0.0000061916
+!H          0.0000000000        0.0000000000        1.8816453413
+!H          0.0000000000        1.6294938353       -0.9407796566
+!H          0.0000000000       -1.6294938353       -0.9407796566
+
+    ! reference geometry
+    coords=(/ 0.0000000000D0,        0.0000000000D0,       -0.0000061916D0, &
+              0.0000000000D0,        0.0000000000D0,        1.8816453413D0, &
+              0.0000000000D0,        1.6294938353D0,       -0.9407796566D0, &
+              0.0000000000D0,       -1.6294938353D0,       -0.9407796566D0 /)
+ 
+!!$    ! distorted, but probably consistent with the reference:
+!!$    coords=(/  0.0080835D0,   0.0000000D0,  -0.0000062D0,&
+!!$        -0.5176180D0,   0.0000000D0,   1.8816453D0,&
+!!$        -0.5181795D0,   1.6294938D0,  -0.9407797D0,&
+!!$        -0.5181795D0,  -1.6294938D0,  -0.9407797D0 /)
+
+!!$    !minimum geometry - 1D
+!!$    coords=(/  -0.0934927D0,   0.0000000D0,  -0.0000000D0, &
+!!$        0.4308739D0,  -0.0000000D0,   1.8815559D0,&
+!!$        0.4313413D0,   1.6294751D0,  -0.9407780D0,&
+!!$        0.4313413D0,  -1.6294751D0,  -0.9407780D0 /)
+
+
+    
+
+    nframe=1
+    coords2(1:nvar)=coords
+
+    nzero=6
+    nmass=4
+!    coords2(nvar+1)=14.0030740048D0
+    !OH3+
+    coords2(nvar+1)=15.99491461956D0
+    coords2(nvar+2:nvar2)=1.0078250321D0
+    spec(1:4)=0 ! all atoms active
+    nz=4
+    spec(5)=7 ! Nuclear charge
+    spec(6:8)=1 ! Nuclear charge
+
+    printl=4
+    ! read in potential data
+    !call read_pot_init(nvar/3)
+
+  end if
+
+  if(isystem==7) then
+
+    nzero=0
+    coords=(/ -1.D0,   0.D0, 0.D0 /)! main saddle point
+!    coords=(/ -1.D0,   0.01D0, 0.D0 /)!  main saddle point distorted startvalue
+
+!   coords=(/ -2.D0, 0.D0 , 0.D0 /)! left minimum
+!    coords=(/ -2.D0, 0.2D0 , 0.D0 /)! left minimum distorted startvalue
+!    coords=(/ 1.D0, 0.D0, 0.D0 /)! second saddle point
+!    coords=(/ 1.D0, 1.D0 , 0.D0 /)! right minimum, perpendicular to second saddle point
+!!$    coords=(/ 1.D0, 0.3670625D0, 0.D0 /)! right minimum, perpendicular to second saddle point
+
+   ! Main TS and direction
+    nframe=1
+    coords2(1:3)=(/ -0.8D0 ,  0.1D0,  0.D0 /)
+
+!More than one frame
+!!$    coords=(/ -2.D0, 0.D0 , 0.D0 /)! left minimum
+!!$    nframe=19
+!!$    coords2(1:nframe*3)=(/ &
+!!$         -1.7D0, 0.D0 , 0.D0, &
+!!$         -1.4D0, 0.D0 , 0.D0, &
+!!$         -1.2D0, 0.D0 , 0.D0, &
+!!$         -1.0D0, 0.D0 , 0.D0, & ! main saddle point
+!!$         -0.8D0, 0.D0 , 0.D0, &       
+!!$         -0.6D0, 0.D0 , 0.D0, &
+!!$         -0.4D0, 0.D0 , 0.D0, &
+!!$         -0.2D0, 0.D0 , 0.D0, &
+!!$          0.0D0, 0.D0 , 0.D0, &
+!!$          0.2D0, 0.D0 , 0.D0, &
+!!$          0.4D0, 0.D0 , 0.D0, &
+!!$          0.6D0, 0.D0 , 0.D0, &
+!!$          0.8D0, 0.D0 , 0.D0, &
+!!$          1.D0, 0.0D0 , 0.D0, & ! second saddle point
+!!$          1.D0, 0.2D0 , 0.D0, &
+!!$          1.D0, 0.4D0 , 0.D0, &
+!!$          1.D0, 0.6D0 , 0.D0, &
+!!$          1.D0, 0.8D0 , 0.D0, &
+!!$          1.D0, 1.0D0 , 0.D0  &
+!!$        /)
+
+!More than one frame
+!!$    coords=(/ -2.D0, 0.D0 , 0.D0 /)! left minimum
+!!$    nframe=10
+!!$    coords2(1:nframe*3)=(/ &
+!!$        -1.4D0, 0.D0 , 0.D0, &
+!!$         -1.2D0, 0.D0 , 0.D0, &
+!!$         -1.0D0, 0.D0 , 0.D0, & ! main saddle point
+!!$         -0.8D0, 0.D0 , 0.D0, &       
+!!$         -0.6D0, 0.D0 , 0.D0, &
+!!$         -0.4D0, 0.2D0 , 0.D0, &
+!!$         -0.2D0, 0.D0 , 0.D0, &
+!!$          0.0D0, 0.D0 , 0.D0, &
+!!$          0.2D0, 0.D0 , 0.D0, &
+!!$          0.2D0, 0.2D0 , 0.D0 &
+!!$          /)
+
+
+    nmass=1
+    coords2(nvar2)=1.0078250321D0 ! mass: last entry in coords2, here using mass of protium
+!    coords2(nvar2)=10.00 ! mass: last entry in coords2, here using mass of more 
+
+
+    print*,"nspec",nspec
+    spec(1)=-4
+  end if
+
+  ! polymul
+  if(isystem==8) then
+
+    coords=0.D0
+    coords2=0.D0
+    coords(1)=1.D0
+!    call random_number(coords)
+
+  !  coords(1)=-2.0D0
+
+    nframe=1
+    !coords2(1:num_dim)=(/ 1.D0 ,  0.D0,  0.D0 /)
+
+    nzero=0
+    nmass=num_dim/3
+    coords2(num_dim/3+1:num_dim+num_dim/3)=1.0078250321D0 ! mass: last entry in coords2, here using mass of protium
+  !  coords2(nvar2)=2.013553212D0 ! mass: last entry in coords2, here using mass of deuterium
+  !  coords2(nvar2)=3.D0
+
+    !spec(1)=-34
+    spec(:)=0
+
+  end if
+
+!*************END case of isystem checking******************
+
+  tolerance=4.5D-5 ! negative: default settings
   printl=4
   printf=4
-  maxcycle=500
+  maxcycle=500 !200
   maxene=100000
 
-  !tolrot=5.D-5
-  !maxrot=100
+  tolrot=1.D2
+!  tolrot=0.1D0
+!  maxrot=100 !was 100
 
   task=0 !1011
 
-  distort=0.0D0 !-0.2D0
+  distort=0.D0 !0.4 
   tatoms=0
-  icoord=221
+  icoord=0 !0 cartesian coord !210 Dimer !190 qts search !120 NEB frozen endpoint
   massweight=0
-  iopt=11
+
+! TO DO (urgent): better dtau for endpoints (interpolate energy) when reading dist
+
+  imicroiter=1 ! means: use microiterative optimization
+
+  iopt=3 ! 20 !3 or 20 later change to 12
+  temperature = 2206.66844626D0*0.99D0 ! K ! T_c for the MB-potential for hydrogen is 2206.668 K
+  !temperature = 0.8D0*333.40829D0  ! K ! T_c 20102.83815 K
+  !temperature = 500.D0
+  ! Cubic potential (isystem=5: Crossover temperature for tunnelling  1846563.59447 K)
+  temperature = 0.99D0 * 1846563.59447D0
+  ! eckart potential (scatter) Tc: 3186172.17493753 K
+  temperature = 0.9D0*3186172.17493753D0
+  temperature= 0.7D0 * 275.13301D0 
+! T_c for 162 DOF: 511.06618
+
   iline=0
-  maxstep=0.3D0
+  maxstep=0.1D0
   scalestep=1.0D0
-  lbfgs_mem=40
-  nimage=7
-  nebk=1.D-2
+  lbfgs_mem=100
+  nimage=39 !*k-k+1
+  nebk=1.0D0 ! for QTS calculations with variable tau, nebk transports the parameter alpha (0=equidist. in tau)
+  qtsflag=0 ! 1: Tunneling splittings, 11/10: read image hessians
+
+  !"accurate" etunnel for 0.4 Tc: 0.3117823831234522
 
   ! Hessian
-  delta=1.D-4
-!  soft=-6.D-4
-  update=0
-  maxupd=50
-  inithessian = 0
+  delta=1.D-2
+  soft=-6.D-4
+  update=2
+  maxupd=0
+  inithessian=0
+  minstep=1.D0 **2 ! 1.D-5
   minstep=1.D-5
+
+!!$  ! variables for exchange by sed
+!!$  iopt=IOPT_VAR
+!!$  nimage=NIMAGE_VAR
+!!$  temperature = TFAC ! K ! T_c for the MB-potential for hydrogen is 2206.668 K
+!!$  nebk= NEBK_VAR
+
 
   ! damped dynamics
   fric0=0.1D0
@@ -404,84 +802,329 @@ subroutine dlf_get_params(nvar,nvar2,nspec,coords,coords2,spec,ierr, &
   ntasks = 1
   tdlf_farm = 1
 
-  ! PARAMETERS FOR specific systems
-  select case (isystem)
-  case (1)
-    tatoms=0
-    !
-  case (2)
-    tatoms=1
-  !  call read_rand(coords)
-  !  coords=coords*2.D0
-!    coords(1)=coords(1)+10.D0
-  case (3)
-    tatoms=1
-!!$    lbfgs_mem=40
-!!$    call read_rand(coords)
-!!$    coords=coords*2.D0
-  end select
+  tatoms=1
+  
+!  call test_ene
 
 end subroutine dlf_get_params
 
+subroutine test_update
+  use dlf_parameter_module, only: rk
+  use dlf_allocate, only: allocate,deallocate
+  use dlf_global, only: glob,printl
+  implicit none
+  integer(4) :: varperimage,nimage,iimage,ivar4
+  real(rk), allocatable:: coords(:,:),grad(:,:) ! varperimage,nimage
+  real(rk), allocatable:: hess(:,:,:) ! varperimage,varperimage,nimage
+  real(rk), allocatable:: fhess(:,:) ! 2*varperimage*nimage,2*varperimage*nimage
+  real(rk), allocatable:: eigval(:),eigvec(:,:)
+  real(rk), allocatable:: vec0(:)
+  real(rk), allocatable:: determinant(:)
+  real(rk), allocatable:: tmphess(:,:)
+  real(rk) :: svar
+  integer :: ivar,jvar,vp8,target_image,step,lastimage,jimage,turnimg
+  logical :: havehessian,fracrecalc
+
+  open(unit=102,file="grad_coor.bin",form="unformatted")
+  read(102) varperimage,nimage
+  print*,"varperimage,nimage",varperimage,nimage
+  vp8=varperimage
+
+!!$  call allocate(coords,int(varperimage,kind=8),int(nimage,kind=8))
+!!$  call allocate(grad,int(varperimage,kind=8),int(nimage,kind=8))
+!!$  call allocate(determinant,int(nimage,kind=8))
+
+  do iimage=1,nimage
+    read(102) ivar4
+    print*,"Reading coords/grad of image",ivar4
+    read(102) grad(:,iimage)
+    read(102) coords(:,iimage)
+  end do
+  close(102)
+  print*,"Coords sucessfully read"
+
+  ! print coords and grad
+  iimage=2
+  print*,"Coords and grad for image ",iimage
+  do ivar=1,vp8
+    write(6,"(i6,1x,2es18.9)") &
+        ivar,coords(ivar,iimage),grad(ivar,iimage)
+  end do
+
+  open(unit=101,file="hessian.bin",form="unformatted")
+  ! Hessian in mass-weighted coordinates on the diagnal blocks - everything else should be zero
+  read(101) iimage,ivar4!neb%varperimage,neb%nimage
+  if(iimage/=varperimage.or.ivar4/=nimage) then
+    print*,"Dimensions read",iimage,ivar4
+    call dlf_fail("ERROR: wrong dimensions in hessian.bin!")
+  end if
+  ivar=2*varperimage*nimage
+  print*,"File Hessian size",ivar
+  call allocate(fhess,ivar,ivar)
+  read(101) fhess
+  close(101)
+  print*,"Hessian sucessfully read"
+
+  ! map hessian to different array:
+!!$  call allocate(hess,int(varperimage,kind=8),int(varperimage,kind=8),int(nimage,kind=8))
+  do iimage=1,nimage
+    print*,"Image",iimage,"Hessian positions",(iimage-1)*varperimage+1,iimage*varperimage
+    hess(:,:,iimage)=fhess((iimage-1)*varperimage+1:iimage*varperimage,(iimage-1)*varperimage+1:iimage*varperimage)
+  end do
+  call deallocate(fhess)
+
+  call allocate(eigval,vp8)
+  call allocate(eigvec,vp8,vp8)
+  ! now we have all we need
+
+  print*,"# Distance from previous image"
+  do iimage=2,nimage
+    print*,iimage,sqrt(sum( (coords(:,iimage)-coords(:,iimage-1))**2))
+  end do
+
+  print*,"# Determinant of Hessian"
+  do iimage=1,nimage
+    do ivar=1,vp8
+      do jvar=ivar+1,vp8
+        if(abs(hess(ivar,jvar,iimage)-hess(jvar,ivar,iimage))>1.D-20) &
+            print*,"Unsymmetric:",ivar,jvar,iimage,hess(ivar,jvar,iimage),hess(jvar,ivar,iimage)
+      end do
+    end do
+    call dlf_matrix_diagonalise(vp8,hess(:,:,iimage),eigval,eigvec)
+    !write(6,"(i6,1x,9es12.3)") iimage,product(eigval(8:vp8)),eigval(1:8)
+    do ivar=1,6
+      eigval(minloc(abs(eigval)))=1.D0
+    end do
+    determinant(iimage)=product(eigval)
+    write(6,"(i6,1x,9es12.3)") iimage,product(eigval),eigval(1:8)
+  end do
+  
+  print*,"maxval(hess(:,:,nimage-1)-hess(:,:,nimage))",maxval(hess(:,:,nimage-1)-hess(:,:,nimage))
+
+!!$  ! Richtungsableitung
+!!$  call allocate(vec0,vp8)!int(varperimage,kind=8))
+!!$  do iimage=2,nimage-1
+!!$    ! eigval is Vector along which the derivative is taken
+!!$    eigval=coords(:,iimage+1)-coords(:,iimage-1)
+!!$    svar=sqrt(sum(eigval**2))
+!!$    eigval=eigval/svar
+!!$    vec0=matmul(hess(:,:,iimage),eigval)
+!!$    do ivar=1,vp8
+!!$      write(6,"(2i6,1x,2es18.9,1x,f10.5)") &
+!!$          iimage,ivar,(grad(ivar,iimage+1)-grad(ivar,iimage-1))/svar,vec0(ivar),&
+!!$          vec0(ivar)/((grad(ivar,iimage+1)-grad(ivar,iimage-1))/svar)
+!!$    end do
+!!$  end do
+
+  !
+  ! now test updates
+  !
+  call allocate(tmphess,vp8,vp8)
+  havehessian=.true.
+  fracrecalc=.false.
+  printl=2
+  glob%maxupd=30000
+
+  target_image=1 !nimage
+  ! update hessians to the one of the first image
+  print*,"Updating Hessians to that of image",target_image
+  print*,"Sum-of-squares difference"
+  do iimage=1,nimage
+    tmphess(:,:)=hess(:,:,iimage)
+    call dlf_hessian_update(vp8, &
+        coords(:,target_image),coords(:,iimage),&
+        grad(:,target_image),grad(:,iimage), &
+        tmphess, havehessian, fracrecalc)
+    if(.not.havehessian) then
+      print*,"Problem with hessian update, image",iimage
+      havehessian=.true.
+    end if
+    print*,iimage,sum( (tmphess-hess(:,:,target_image))**2),&
+        sum( (hess(:,:,iimage)-hess(:,:,target_image))**2)
+  end do
+
+  print*,"Minstep",glob%minstep
+  print*,"Updating Hessians to that of image",target_image
+  print*,"Determinant"
+  open(file="determinant",unit=10)
+  do iimage=1,nimage
+    tmphess(:,:)=hess(:,:,iimage)
+    call dlf_hessian_update(vp8, &
+        coords(:,target_image),coords(:,iimage),&
+        grad(:,target_image),grad(:,iimage), &
+        tmphess, havehessian, fracrecalc)
+    if(.not.havehessian) then
+      print*,"Problem with hessian update, image",iimage
+      havehessian=.true.
+    end if
+    call dlf_matrix_diagonalise(vp8,tmphess,eigval,eigvec)
+    !write(6,"(i6,1x,9es12.3)") iimage,product(eigval(8:vp8)),eigval(1:8)
+    do ivar=1,6
+      eigval(minloc(abs(eigval)))=1.D0
+    end do
+
+    print*,iimage,product(eigval),determinant(iimage),determinant(target_image)
+    write(10,*) iimage,product(eigval),determinant(iimage),determinant(target_image)
+  end do
+  close(10)
+
+  print*,"Updating Hessians to that of image",target_image
+  print*,"Determinant - incremental"
+  open(file="determinant_incr",unit=10)
+  do iimage=1,nimage
+    tmphess(:,:)=hess(:,:,iimage)
+    step=1
+    if(iimage>target_image) step=-1
+    lastimage=iimage
+    do jimage=iimage+step,target_image,step
+      !print*,"updating",lastimage," to ",jimage
+      call dlf_hessian_update(vp8, &
+          coords(:,jimage),coords(:,lastimage),&
+          grad(:,jimage),grad(:,lastimage), &
+          tmphess, havehessian, fracrecalc)
+
+      if(.not.havehessian) then
+        print*,"Problem with hessian update, image",iimage
+        havehessian=.true.
+      end if
+      lastimage=jimage
+    end do
+    call dlf_matrix_diagonalise(vp8,tmphess,eigval,eigvec)
+    !write(6,"(i6,1x,9es12.3)") iimage,product(eigval(8:vp8)),eigval(1:8)
+    do ivar=1,6
+      eigval(minloc(abs(eigval)))=1.D0
+    end do
+
+    print*,iimage,product(eigval),determinant(iimage),determinant(target_image)
+    write(10,*) iimage,product(eigval),determinant(iimage),determinant(target_image)
+  end do
+  close(10)
+
+  print*,"Updating Hessians to that of image",target_image
+  print*,"Determinant - incremental turning around"
+  turnimg=20
+  open(file="determinant_turn",unit=10)
+  do iimage=1,nimage
+    tmphess(:,:)=hess(:,:,iimage)
+    lastimage=iimage
+    ! first upwards to turnimg
+    do jimage=iimage+1,turnimg
+      print*,"updating",lastimage," to ",jimage
+      call dlf_hessian_update(vp8, &
+          coords(:,jimage),coords(:,lastimage),&
+          grad(:,jimage),grad(:,lastimage), &
+          tmphess, havehessian, fracrecalc)
+
+      if(.not.havehessian) then
+        print*,"Problem with hessian update, image",iimage
+        havehessian=.true.
+      end if
+      lastimage=jimage
+    end do
+    step=1
+    if(lastimage>target_image) step=-1
+    do jimage=lastimage+step,target_image,step
+      print*,"updating",lastimage," to ",jimage
+      call dlf_hessian_update(vp8, &
+          coords(:,jimage),coords(:,lastimage),&
+          grad(:,jimage),grad(:,lastimage), &
+          tmphess, havehessian, fracrecalc)
+
+      if(.not.havehessian) then
+        print*,"Problem with hessian update, image",iimage
+        havehessian=.true.
+      end if
+      lastimage=jimage
+    end do
+    call dlf_matrix_diagonalise(vp8,tmphess,eigval,eigvec)
+    !write(6,"(i6,1x,9es12.3)") iimage,product(eigval(8:vp8)),eigval(1:8)
+    do ivar=1,6
+      eigval(minloc(abs(eigval)))=1.D0
+    end do
+
+    print*,iimage,product(eigval),determinant(iimage),determinant(target_image)
+    write(10,*) iimage,product(eigval),determinant(iimage),determinant(target_image)
+  end do
+  close(10)
+
+!!$  do ivar=1,vp8
+!!$    WRITE(*,'(33f10.5)') hess(ivar,:,1)*1.D6
+!!$  end do
+!!$
+!!$  do ivar=1,vp8
+!!$    write(6,"(i6,1x,es18.9)") &
+!!$            ivar,eigval(ivar)
+!!$  end do
+
+  call deallocate(coords)
+  call deallocate(grad)
+  
+  call dlf_fail("stop in test_update")
+end subroutine test_update
+
+! just a test routine
+subroutine test_ene
+  use dlf_parameter_module, only: rk
+  implicit none
+  integer :: ivar,ivar2,status
+  integer :: samples
+  real(rk) :: halfSamples
+  real(rk) :: coords(3),grad(3),hess(3,3),ene
+  coords(:)=0.D0
+!  open(file="energy",unit=13)
+  open(file="energy-2d.dat",unit=13)
+  samples = 100
+  halfSamples = dble(samples) * 0.25D0
+  do ivar2=1,samples
+    do ivar=1,samples
+      coords(1)=dble(ivar-samples/2)/halfSamples
+      coords(2)=dble(ivar2-samples/2)/halfSamples
+      call dlf_get_gradient(3,coords,ene,grad,1,-1,status)
+      call dlf_get_hessian(3,coords,hess,status)
+     write(13,*) coords(1),coords(2),ene,grad(1),grad(2),hess(1,1),hess(2,2),hess(2,1)
+!     write(13,*) coords(1),coords(2),ene,grad(1)
+    end do
+    write(13,*) ""
+  end do
+  close(13)
+  call dlf_fail("stop in test_ene")
+end subroutine test_ene
+
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-subroutine dlf_get_gradient(nvar,coords,energy,gradient,iimage,status)
+subroutine dlf_get_gradient(nvar,coords,energy,gradient,iimage,kiter,status)
   !  Mueller-Brown Potential
   !  see K Mueller and L. D. Brown, Theor. Chem. Acta 53, 75 (1979)
   !  taken from JCP 111, 9475 (1999)
   use dlf_parameter_module, only: rk
   use driver_module
+  use driver_parameter_module
+  !use vib_pot
   implicit none
   integer   ,intent(in)    :: nvar
   real(rk)  ,intent(in)    :: coords(nvar)
   real(rk)  ,intent(out)   :: energy
   real(rk)  ,intent(out)   :: gradient(nvar)
   integer   ,intent(in)    :: iimage
+  integer   ,intent(in)    :: kiter
   integer   ,intent(out)   :: status
   !
   ! variables for Mueller-Brown potential
-  real(rk) :: acappar(4),apar(4),bpar(4),cpar(4),x0par(4),y0par(4)
-  real(rk) :: ebarr
   real(rk) :: x,y,svar,svar2
   integer  :: icount
   ! variables for Lennard-Jones potentials
   real(rk) :: acoords(3,nvar/3)
   real(rk) :: agrad(3,nvar/3)
-  real(rk) :: epsilon=1.D-1
-  real(rk) :: sigma=1.D0
   real(rk) :: r
   integer  :: nat,iat,jat
+  ! additional variables non-cont. diff MEP potential
+  real(rk) :: t ! variation of the depth of the flater saddle point
+
 ! **********************************************************************
+!  call test_update
   status=1
   select case (isystem)
   case (1)
-    print*,"coords in energy eval",coords
-    ! assign parameters (could be moved to something external ...)
-    ebarr=0.5D0
-    acappar(1)=-200.D0*ebarr/106.D0
-    acappar(2)=-100.D0*ebarr/106.D0
-    acappar(3)=-170.D0*ebarr/106.D0
-    acappar(4)=  15.D0*ebarr/106.D0
-    apar(1)=-1.D0
-    apar(2)=-1.D0
-    apar(3)=-6.5D0
-    apar(4)=0.7D0
-    bpar(1)=0.D0
-    bpar(2)=0.D0
-    bpar(3)=11.D0
-    bpar(4)=0.6D0
-    cpar(1)=-10.D0
-    cpar(2)=-10.D0
-    cpar(3)=-6.5D0
-    cpar(4)=0.7D0
-    x0par(1)=1.D0
-    x0par(2)=0.D0
-    x0par(3)=-0.5D0
-    x0par(4)=-1.D0
-    y0par(1)=0.D0
-    y0par(2)=0.5D0
-    y0par(3)=1.5D0
-    y0par(4)=1.D0
-
+    !print*,"coords in energy eval",coords
     x =  coords(1)
     y =  coords(2)
 
@@ -498,7 +1141,8 @@ subroutine dlf_get_gradient(nvar,coords,energy,gradient,iimage,status)
       gradient(2)=gradient(2) + svar2 * &
           (2.D0* cpar(icount)*(y-y0par(icount))+bpar(icount)*(x-x0par(icount)))
     end do
-    !  write(*,'("x,y,func",2f10.5,es15.7)') x,y,energy
+    energy=energy+0.692D0
+    ! write(*,'("x,y,func",2f10.5,es15.7)') x,y,energy
   case (2,3)
 
     ! one could use a Lennard-Jones particle with slightly different
@@ -523,6 +1167,78 @@ subroutine dlf_get_gradient(nvar,coords,energy,gradient,iimage,status)
       end do
     end do
     gradient=reshape(agrad,(/nvar/))
+
+  case(4)
+
+    energy=0.D0
+    gradient=0.D0
+    xvar= coords(1)
+    yvar= (Vb+Va)/(Vb-Va)*exp(alpha*xvar)
+    
+    energy=Va*yvar/(1.D0+yvar)+Vb*yvar/(1.D0+yvar)**2
+    svar=1.D0+yvar
+    gradient(1)=alpha*yvar * ( &
+        Va/svar + (Vb-Va*yvar)/svar**2 - 2.D0*Vb*yvar/svar**3)
+    
+  case(5)
+!!$    !assign parameters for Eckart potential (see Andri's thesis) ???
+!!$    xvar= coords(1)
+!!$    energy=V0*(xvar**2/x0**2-1.D0)**2
+!!$    gradient=0.D0
+!!$    gradient(1)= V0 * 4.D0 / x0**2 * (xvar**3/x0**2-xvar)
+    
+    ! 3rd order polynomial as also used in the 1D-scattering code
+    xvar=coords(1)*1.5D0
+    energy=50.D0*(-2.D0*xvar**3+3.D0*xvar**2)
+    gradient=0.D0
+    gradient(1)= 50.D0*(-6.D0*xvar**2+6.D0*xvar) * 1.5D0
+
+    
+  case(6)
+    
+    !Vibrational potential
+    !call vib_get_gradient(coords,energy,gradient)
+    call dlf_fail("Vibrational calculations not linked")
+
+  case(7)
+    !print*,"coords in energy eval",coords
+    x =  coords(1)
+    y =  coords(2)
+    t =  smallbarvar 
+    
+    energy=0.D0
+    gradient=0.D0
+    
+    energy = 10.D0*dexp(-2.D0*(x+1.D0)**2)*(dexp(-2.D0*(y-1.D0)**2)+(dexp(-2.D0*(y+1.D0)**2)))- &
+        3.D0*dexp(-2.D0*(y**2+(x+2.D0)**2)) - 1.6D0*dexp(-2.D0*(x-1.D0)**2)* &
+        (dexp(-2.D0*(y+t)**2)+dexp(-2.D0*(y-t)**2))
+    gradient(1)= -4.D0*(10.D0*dexp(-2.D0*(x+1.D0)**2)*(dexp(-2.D0*(y-1.D0)**2)+ & 
+        (dexp(-2.D0*(y+1.D0)**2)))*(x+1.D0)-3.D0*dexp(-2.D0*(y**2+(x+2.D0)**2))*(x+2.D0)- &
+        1.6D0*dexp(-2.D0*(x-1.D0)**2)*(dexp(-2.D0*(y+t)**2)+ &
+        dexp(-2.D0*(y-t)**2))*(x-1.D0))
+    gradient(2)= -4.D0*(10.D0*dexp(-2.D0*(x+1.D0)**2)*(dexp(-2.D0*(y-1.D0)**2)* &
+        (y-1.D0)+(dexp(-2.D0*(y+1.D0)**2)*(y+1.D0)))-3.D0*dexp(-2.D0*(y**2+(x+2.D0)**2))*y- &
+        1.6D0*dexp(-2*(x-1)**2)*(dexp(-2*(y+t)**2)*(y+t)+ &
+        dexp(-2.D0*(y-t)**2)*(y-t)))
+    
+  case(8)
+    ! polymul (Polynomial in multiple dimensions)
+    ! E=E1+E2+...+En
+    ! E1= (-2Ebarr) x1**3 + (3Ebarr) x1**2
+    ! Ei=xi**2 * 1/2 * d_i (1-x1/5)  | i>1
+    gradient=0.D0
+    energy= -2.D0 * Ebarr * coords(1)**3 + 3.D0 * Ebarr * coords(1)**2
+    gradient(1)=-6.D0 * Ebarr * coords(1)**2 + 6.D0 * Ebarr * coords(1)
+    do icount=2,num_dim
+!!$      ! finite vdamp
+!!$      energy=energy+coords(icount)**2*0.5D0 * dpar(icount) * (1.D0-coords(1)/vdamp)
+!!$      gradient(1)=gradient(1) -0.5D0*dpar(icount)*coords(icount)**2/vdamp
+!!$      gradient(icount)=coords(icount) * dpar(icount) * (1.D0-coords(1)/vdamp)
+      ! vdamp=infinity
+      energy=energy+coords(icount)**2*0.5D0 * dpar(icount) 
+      gradient(icount)=coords(icount) * dpar(icount)
+    end do
+    
   end select
   status=0
 end subroutine dlf_get_gradient
@@ -532,50 +1248,25 @@ subroutine dlf_get_hessian(nvar,coords,hessian,status)
   !  get the hessian at a given geometry
   use dlf_parameter_module
   use driver_module
+  use driver_parameter_module
+  !use vib_pot
   implicit none
   integer   ,intent(in)    :: nvar
   real(rk)  ,intent(in)    :: coords(nvar)
   real(rk)  ,intent(out)   :: hessian(nvar,nvar)
   integer   ,intent(out)   :: status
-  real(rk) :: epsilon=1.D-1 ! must be the same as in get_gradient
-  real(rk) :: sigma=1.D0
   real(rk) :: acoords(3,nvar/3),r,svar,svar2
   integer  :: posi,posj,iat,jat,m,n
   ! variables for Mueller-Brown potential
-  real(rk) :: acappar(4),apar(4),bpar(4),cpar(4),x0par(4),y0par(4)
-  real(rk) :: ebarr
   real(rk) :: x,y
   integer  :: icount
+  ! variables non-cont. diff. potential
+  real(rk) :: t
 ! **********************************************************************
   hessian(:,:)=0.D0
   status=1
   select case (isystem)
-  case (1)
-    ebarr=0.5D0
-    acappar(1)=-200.D0*ebarr/106.D0
-    acappar(2)=-100.D0*ebarr/106.D0
-    acappar(3)=-170.D0*ebarr/106.D0
-    acappar(4)=  15.D0*ebarr/106.D0
-    apar(1)=-1.D0
-    apar(2)=-1.D0
-    apar(3)=-6.5D0
-    apar(4)=0.7D0
-    bpar(1)=0.D0
-    bpar(2)=0.D0
-    bpar(3)=11.D0
-    bpar(4)=0.6D0
-    cpar(1)=-10.D0
-    cpar(2)=-10.D0
-    cpar(3)=-6.5D0
-    cpar(4)=0.7D0
-    x0par(1)=1.D0
-    x0par(2)=0.D0
-    x0par(3)=-0.5D0
-    x0par(4)=-1.D0
-    y0par(1)=0.D0
-    y0par(2)=0.5D0
-    y0par(3)=1.5D0
-    y0par(4)=1.D0
+  case(1)
 
     x =  coords(1)
     y =  coords(2)
@@ -605,7 +1296,7 @@ subroutine dlf_get_hessian(nvar,coords,hessian,status)
     hessian(2,1)=hessian(1,2)
     status=0
 
-  case (2,3)
+  case(2,3)
     acoords=reshape(coords,(/3,nvar/3/))
     do iat=1,nvar/3
       do jat=iat+1,nvar/3
@@ -653,8 +1344,143 @@ subroutine dlf_get_hessian(nvar,coords,hessian,status)
       end do
     end do
     status=0
+    status=1 ! 1= not possible
+  case(4)
+    ! Eckart
+    xvar= coords(1)
+    yvar= (Vb+Va)/(Vb-Va)*exp(alpha*xvar)
+    svar=1.D0+yvar
+    hessian(1,1)=alpha**2*yvar * ( Va/svar + (Vb-Va*yvar)/svar**2 - 2.D0*Vb*yvar/svar**3) + &
+        alpha**2 * yvar**2 / svar**2 * ( -2.D0*Va + (-4.D0*Vb+2.D0*Va*yvar)/svar +6.D0*Vb*yvar/svar**2)
+!!$    ! debug output - test of hessian-at-maximum-equations.
+!!$    print*,"Hessian calculated, 1,1:",hessian(1,1)+alpha**2*vb/8.D0,hessian(1,1),-alpha**2*vb/8.D0
+!!$    print*,"Hessian short           ",hessian(1,1)+alpha**2*(Va+Vb)**2*(Vb-Va)/8.D0/Vb**3    ,&
+!!$        hessian(1,1),-alpha**2*(Va+Vb)**3*(Vb-Va)/8.D0/Vb**3
+!!$    print*,va,hessian(1,1)+0.08085432314993411D0,"leading"
+!!$    print*,"should be zero",Va/svar + (Vb-Va*yvar)/svar**2 - 2.D0*Vb*yvar/svar**3
+    status=0 ! 0=OK 1=not available 
+  case(5)
+!!$    ! Quartic
+!!$    xvar= coords(1)
+!!$    hessian(1,1)=V0 * 4.D0 / x0**2 * (3.D0*xvar**2/x0**2-1.D0)
+!!$    status=0 
+    
+    ! 3rd order polynomial as also used in the 1D-scattering code
+    xvar=coords(1)*1.5D0
+    !gradient(1)= 50.D0*(-6.D0*xvar**2+6.D0*xvar) * 1.5D0
+    hessian(1,1)=50.D0*(-12.D0*xvar+6.D0) * 1.5D0**2
+    status=0 
+
+  case(6)
+    !Vibrational potential
+    !call vib_get_hessian(coords,hessian)
+    !status=0 
+  case(7)
+
+    x =  coords(1)
+    y =  coords(2)
+    t =  smallbarvar 
+    hessian=0.D0
+
+
+!!$    energy = 10.D0*dexp(-2.D0*(x+1.D0)**2)*(dexp(-2.D0*(y-1.D0)**2)+(dexp(-2.D0*(y+1.D0)**2)))- &
+!!$       dexp(-2.D0*(y**2+(x+2.D0)**2)) - 1.6D0*dexp(-2.D0*(x-1.D0)**2)* &
+!!$       (dexp(-2.D0*(y+t)**2)+dexp(-2.D0*(y-t)**2))
+
+    hessian(1,1)=-4.D0*(10.D0*(dexp(-2.D0*(y-1.D0)**2)+dexp(-2.D0*(y+1.D0)**2))*(dexp(-2.D0*(x+1.D0)**2)*&
+        (-4.D0*(x+1.D0)**2+1.D0))-3.D0*dexp(-2.D0*(y**2+(x+2.D0)**2))*(-4.D0*(x+2.D0)**2+1.D0)-1.6D0* &
+        (dexp(-2.D0*(x-1.D0)**2)*(-4.D0*(x-1.D0)**2+1.D0))*(dexp(-2.D0*(y+t)**2)+dexp(-2.D0*(y-t)**2)))
+    
+    hessian(2,2)=-4.D0*(10.D0*dexp(-2.D0*(x+1.D0)**2)*(dexp(-2.D0*(y-1.D0)**2)*(-4.D0*(y-1.D0)**2+1.D0))- &
+        3.D0*dexp(-2.D0*(y**2+(x+2.D0)**2))*(-4.D0*y**2+1.D0)-1.6D0*dexp(-2.D0*(x-1.D0)**2)* &
+        (dexp(-2.D0*(y+t)**2)*(-4.D0*(y+t)**2+1.D0)+dexp(-2.D0*(y-t)**2)*(-4.D0*(y-t)**2+1.D0)))
+    
+    hessian(1,2)= 8.D0*(10.D0*dexp(-2.D0*(x+1.D0)**2)*(x+1.D0)*(dexp(-2.D0*(y-1.D0)**2)*(y-1.D0)+ &
+        (dexp(-2.D0*(y+1.D0)**2)*(y+1.D0)))-3.D0*dexp(-2.D0*(y**2+(x+2.D0)**2))*(x+2.D0)*y- &
+        1.6D0*dexp(-2.D0*(x-1.D0)**2)*(dexp(-2.D0*(y+t)**2)*(y+t)+dexp(-2.D0*(y-t)**2)*(y-t))*(x-1.D0))
+
+    hessian(2,1)=hessian(1,2)
+
+    status=0
+
+  case(8)
+    ! polymul (Polynomial in multiple dimensions)
+    ! E=E1+E2+...+En
+    ! E1= (-2Ebarr) x1**3 + (3Ebarr) x1**2
+    ! Ei=xi**2 * 1/2 * d_i (1-x1/5)  | i>1
+    hessian=0.D0
+    hessian(1,1)=-12.D0 * Ebarr * coords(1) + 6.D0 * Ebarr
+!!$    ! finite vdamp
+!!$    do iat=2,num_dim
+!!$      hessian(1,iat)=-2.D0/vdamp * coords(iat)
+!!$      hessian(iat,1)=-2.D0/vdamp * coords(iat)
+!!$    end do
+    do iat=2,num_dim
+!!$      ! finite vdamp
+!!$      hessian(iat,iat)=dpar(iat) * (1.D0-coords(1)/vdamp)
+      ! vdamp = infinity
+      hessian(iat,iat)=dpar(iat)
+    end do
+    
+    status=0
+
   end select
+
 end subroutine dlf_get_hessian
+
+! initialize parameters for the test potentials
+subroutine driver_init
+  use driver_parameter_module
+  implicit none
+  real(rk) :: ebarr_
+  integer :: icount
+  ! assign parameters for MB potential
+  ebarr_=0.5D0
+  acappar(1)=-200.D0*ebarr_/106.D0
+  acappar(2)=-100.D0*ebarr_/106.D0
+  acappar(3)=-170.D0*ebarr_/106.D0
+  acappar(4)=  15.D0*ebarr_/106.D0
+  apar(1)=-1.D0
+  apar(2)=-1.D0
+  apar(3)=-6.5D0
+  apar(4)=0.7D0
+  bpar(1)=0.D0
+  bpar(2)=0.D0
+  bpar(3)=11.D0
+  bpar(4)=0.6D0
+  cpar(1)=-10.D0
+  cpar(2)=-10.D0
+  cpar(3)=-6.5D0
+  cpar(4)=0.7D0
+  x0par(1)=1.D0
+  x0par(2)=0.D0
+  x0par(3)=-0.5D0
+  x0par(4)=-1.D0
+  y0par(1)=0.D0
+  y0par(2)=0.5D0
+  y0par(3)=1.5D0
+  y0par(4)=1.D0
+  ! parameters for polymul
+  dpar(1)=0.D0
+  do icount=2,num_dim
+    dpar(icount)=1.D-4+(dble(icount-2)/dble(num_dim-2))**2*0.415D0
+  end do
+end subroutine driver_init
+
+! classical flux of the Eckart potential 
+! returns log(flux)
+subroutine driver_clrate(beta_hbar,flux)
+  use driver_parameter_module
+  implicit none
+  real(rk),intent(in) :: beta_hbar
+  real(rk),intent(out):: flux
+  real(rk) :: vmax,pi
+  pi=4.D0*atan(1.D0)
+  vmax=(Va+Vb)**2/(4.D0*Vb)
+  print*,"V_max=",vmax
+  flux=-beta_hbar*vmax-log(2.D0*pi*beta_hbar)
+  
+end subroutine driver_clrate
 
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 subroutine dlf_put_coords(nvar,mode,energy,coords,iam)
@@ -872,3 +1698,11 @@ subroutine read_rand(arr)
     end if
   end if
 end subroutine read_rand
+
+subroutine driver_eck(vb_,alpha_)
+  use dlf_parameter_module
+  use driver_parameter_module
+  real(rk),intent(out) :: vb_,alpha_
+  vb_=vb
+  alpha_=alpha
+end subroutine driver_eck

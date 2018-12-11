@@ -14,16 +14,16 @@
 !! * and others, depending on the change
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Rev: 398 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_global_module.f90 $
-!! $Id: dlf_global_module.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2013-10-23 15:44:55 +0100 (Wed, 23 Oct 2013) $
+!! $Rev: 532 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_global_module.f90 $
+!! $Id: dlf_global_module.f90 532 2013-10-23 14:44:55Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -51,9 +51,13 @@ module dlf_global
     integer  :: nvar        ! number of xyz variables (3*nat)
     integer  :: nat         ! number of xyz atoms
     real(rk) :: tolerance   ! main convergence criterion (Max grad comp.)
+    real(rk) :: tolerance_max_g !convergence criterion for max grad, added by Yoni
+    real(rk) :: tolerance_rms_g !convergence criterion for RMS grad, added by Yoni
     real(rk) :: tolerance_e ! convergence criterion on energy change
     real(rk) :: energy
     real(rk) :: oldenergy
+    logical  :: periodic    ! is this a periodic system
+    integer  :: cell_size ! How large is the cell for a periodic case (3x3 or 6 params)
     logical  :: toldenergy  ! is oldenergy defined?
     logical  :: tinit=.false. ! true if this instance is initialised
     logical  :: tatoms      ! atoms or arbitrary DOF
@@ -74,16 +78,27 @@ module dlf_global
     integer  :: imultistate  ! type of multistate calculation (0 = none)
     integer  :: needcoupling ! true if interstate coupling gradients 
                              !  should be calculated
+    integer  :: imicroiter   ! flag for microiterative calculations 
+                             ! =0 : standard, non-microiterative calculation
+                             ! >0 : microiterative calculation
+                             !  [=1 : inside macroiterative loop]
+                             !  [=2 : inside microiterative loop]
 
     ! Line search properties
     real(rk) :: maxstep     ! maximum length of the step in internals
+    real(rk) :: init_tr     ! maximum length of the step in internals
     real(rk) :: scalestep   ! constant factor with which to scale the step
     logical  :: taccepted   ! is this step accepted
 
     ! Optimiser parameters
     integer  :: lbfgs_mem   ! number of steps in LBFGS memory
     real(rk) :: temperature ! temperature for thermal analysis
-    
+
+    ! qTS parameters
+    integer  :: nzero       ! number of zero vibrational modes in system 
+    integer  :: qtsflag     ! additional info, like if tunnelig splittings are
+                            ! to be calculated (see dlf_qts.f90)
+
     ! Damped dynamics
     real(rk) :: timestep 
     real(rk) :: fric0       ! start friction
@@ -121,6 +136,8 @@ module dlf_global
     logical  :: tcoords2    ! are coords2 used?
     integer  :: nimage      ! Number of images (e.g. in NEB)
     real(rk) :: nebk        ! force constant for NEB
+    real(rk) :: neb_climb_test  ! threshold scale factor for spawning climbing image
+    real(rk) :: neb_freeze_test ! threshold scale factor for freezing NEB images
     integer  :: maxrot      ! maximum number of rotations in each DIMER step
     real(rk) :: tolrot      ! angle tolerance for rotation (deg) in DIMER
 
@@ -133,6 +150,10 @@ module dlf_global
     integer  :: dump        ! after how many E&G calculations to dump a 
                             !   checkpoint file?
     integer  :: restart     ! restart mode: 0 new, 1 read dump file ...
+
+    ! cleanup
+    integer :: cleanup      ! check that dlf_fail does not enter an infinite loop
+                            ! when cleaning up allocatable arrays
 
     ! Parallel optimisation
     integer  :: po_pop_size      ! sample population size
@@ -159,7 +180,7 @@ module dlf_global
     ! initialization for the case of a serial buils without a call to the dummy 
     ! routine dlf_mpi_initialize
     integer  :: nprocs=1         ! Total number of processors involved
-    integer  :: ntasks=1         ! number of taskfarms
+    integer  :: ntasks=1         ! number of taskfarms (workgroups)
     integer  :: nprocs_per_task=1 ! number of processors per taskfarm
     integer  :: iam=0            ! rank (or index, starting from zero) of this 
                                  ! processor within global_comm
@@ -169,6 +190,13 @@ module dlf_global
                                  ! to which this processor belongs
     !integer  :: master_in_task   ! rank of the spokesperson proc in each farm
     !                             ! within the communicator of a taskfarm
+
+    integer  :: serial_cycle     ! Parallel NEB - calculate the first e/g array
+                                 ! on all processors to ensure each image 
+                                 ! calculation starts from a good guess on 
+                                 ! the first cycle
+    logical  :: dotask=.true.    ! Flag set if this processor should do the
+                                 ! task in question
 
    ! ARRAYS
     real(rk),allocatable :: xcoords(:,:) ! xyz coordinates 
@@ -209,6 +237,19 @@ module dlf_global
              ! of po_radius shrinks to less than the corresponding component of po_tolerance_r
     real(rk), allocatable :: po_radius_scaling(:) ! vector of scaling factors to convert 
              ! the base values (po_radius_base and po_tol_r_base) into the above 2 vectors.
+
+    ! microiterative optimisation
+    integer ,allocatable :: micspec(:)  ! (nat) inner region flag from spec array
+    integer :: nicore ! number of internal coordinates in inner region 
+                      ! (=0 for non-microiterative calculation)
+    integer :: maxmicrocycle ! max number of microiterative cycles 
+                             ! before switching back to macro
+    logical :: micro_esp_fit ! fit ESP charges to inner region during microiterations
+    ! ESP fit correction arrays
+    ! final dimension in each is for multiple images
+    real(rk),allocatable :: macrocoords(:,:,:) ! xyz coordinates for last macro step
+    real(rk),allocatable :: g0corr(:,:,:)      ! xyz gradient correction for ESP fit
+    real(rk),allocatable :: e0corr(:)                      ! E0 - E0(esp)
 
   end type glob_type
 

@@ -11,16 +11,16 @@
 !!
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Rev: 390 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_neb.f90 $
-!! $Id: dlf_neb.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2014-10-22 15:12:03 +0100 (Wed, 22 Oct 2014) $
+!! $Rev: 543 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_neb.f90 $
+!! $Id: dlf_neb.f90 543 2014-10-22 14:12:03Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -46,6 +46,8 @@ module dlf_neb
     integer    :: iimage              ! current image
     integer    :: varperimage         ! number of variables to be 
                                       !   optimised per image
+    integer    :: coreperimage        ! number of variables in inner 
+                                      !   microiterative region per image
     integer    :: step                ! number of iterations done
     integer    :: maximage            ! number of the image closest to 
                                       !   the climbing image
@@ -83,8 +85,10 @@ module dlf_neb
   end type neb_type
   integer,parameter   :: unitp=1000 ! base unit for path xyz files
   logical,parameter   :: xyzall=.true. ! xyz files of all atoms or only active atoms?
+  integer,parameter   :: maxxyzfile=300 ! larger than 9999 will require modification of file names
   type(neb_type),save :: neb
-  ! temp:
+  real(rk)  :: beta_hbar,ene_ins_ext
+  ! temp: using L-BFGS with a memory of only 2 converges reasonably well with the string method
   logical, parameter:: string=.false.
 end module dlf_neb
 !!****
@@ -103,8 +107,8 @@ end module dlf_neb
 subroutine dlf_neb_init(nimage,icoord)
 !! SOURCE
   use dlf_parameter_module, only: rk,ik
-  use dlf_global, only: glob,stderr,stdout,printf
-  use dlf_neb, only: neb,unitp,xyzall
+  use dlf_global, only: glob,stderr,stdout,printf,printl
+  use dlf_neb, only: neb,unitp,xyzall,maxxyzfile
   use dlf_allocate, only: allocate,deallocate
   implicit none
   integer, intent(in)  :: nimage
@@ -122,6 +126,7 @@ subroutine dlf_neb_init(nimage,icoord)
   neb%step=0
 
   neb%tfreeze=.true.
+  if(icoord==190) neb%tfreeze=.false.
 
   ! check nimage
   if(nimage<3) call dlf_fail("More than 2 images have to be used in NEB")
@@ -133,15 +138,26 @@ subroutine dlf_neb_init(nimage,icoord)
 
   iarr3=shape(glob%xcoords2)
   nframe=iarr3(3)
-  if(nframe>nimage-2) then
+  if(nframe>nimage-2.and.icoord/=190) then
     nframe=nimage-2
-    write(stdout,'("Warning: too may frames input in NEB. Only the &
+    write(stdout,'("Warning: too many frames input in NEB. Only the &
         &first",i4," frames are used")') nframe
   end if
+  if(nframe>nimage-1.and.icoord==190) then
+    if(printl>=2) write(stdout,'("Warning: too may frames input in qTS. The middle &
+        &",i4," frames will be removed")') nframe-nimage
+    do ivar=nimage/2,nimage
+      glob%xcoords2(:,:,ivar)=glob%xcoords2(:,:,ivar+nframe-nimage)
+    end do
+  end if
 
-  ! set mode
-  if( icoord<100 .or. icoord>199) call dlf_fail("Wrong icoord in NEB")
+ ! set mode
+  if( (icoord<100 .or. icoord>199))&
+       call dlf_fail("Wrong icoord in NEB")
   neb%mode=(icoord-100)/10
+  ! catch qTS
+  if(neb%mode==9) neb%mode=0
+
   if(neb%mode>5) call dlf_fail("Mode in NEB has to be 0-5")
   neb%optcart=.false.
   if(neb%mode>2) then
@@ -154,12 +170,14 @@ subroutine dlf_neb_init(nimage,icoord)
   ! Cartesian coordinates
   case (0)
     ! define the number of internal variables (covering all images)
-    call dlf_direct_get_nivar(neb%varperimage)
+    call dlf_direct_get_nivar(0, neb%varperimage)
+    call dlf_direct_get_nivar(1, neb%coreperimage)
 
     ! calculate iweights
     call allocate( glob%iweight,neb%varperimage*nimage)
     ! first image
     ivar=1
+    if(glob%tatoms) then
     do iat=1,glob%nat
       if(glob%spec(iat)>=0) then
         glob%iweight(ivar:ivar+2)=glob%weight(iat)
@@ -181,28 +199,32 @@ subroutine dlf_neb_init(nimage,icoord)
       ivar=neb%varperimage*(iimage-1)+1
       glob%iweight(ivar:ivar+neb%varperimage-1)=glob%iweight(1:neb%varperimage)
     end do
+    else
+      glob%iweight(:)=1.D0
+    end if
 
   ! HDLC
   case(1:4)
     call dlf_hdlc_init(glob%nat,glob%spec,mod(glob%icoord,10),glob%ncons, &
         glob%icons,glob%nconn,glob%iconn)
 
+    call dlf_hdlc_get_nivar(0, neb%varperimage)
+    call dlf_hdlc_get_nivar(1, neb%coreperimage)
+
     ! create hdlc with start and endpoint as coordinates
     call allocate(tmpcoords,3,(1+nframe)*glob%nat)
     tmpcoords(:,1:glob%nat)=glob%xcoords(:,:)
     tmpcoords(:,glob%nat+1:(1+nframe)*glob%nat)= &
         reshape(glob%xcoords2(:,:,:),(/3,nframe*glob%nat/))
-    call dlf_hdlc_create(glob%nat,glob%spec,glob%znuc,1+nframe, &
-        tmpcoords,glob%weight,glob%mass)
+    call dlf_hdlc_create(glob%nat,neb%coreperimage,glob%spec,glob%micspec,&
+        glob%znuc,1+nframe,tmpcoords,glob%weight,glob%mass)
     call deallocate(tmpcoords)
-
-    call dlf_hdlc_get_nivar(neb%varperimage)
 
     ! calculate iweights
     call allocate( glob%iweight,neb%varperimage*nimage)
     ! first image
-    call dlf_hdlc_getweight(glob%nat,neb%varperimage,glob%weight, &
-        glob%iweight(1:neb%varperimage))
+    call dlf_hdlc_getweight(glob%nat,neb%varperimage,neb%coreperimage,glob%micspec,&
+         glob%weight,glob%iweight(1:neb%varperimage))
     ! copy weights to all other images
     do iimage=2,nimage
       ivar=neb%varperimage*(iimage-1)+1
@@ -215,6 +237,7 @@ subroutine dlf_neb_init(nimage,icoord)
   end select
 
   glob%nivar=neb%varperimage*nimage
+  glob%nicore = neb%coreperimage * nimage
 
   call allocate( glob%icoords,glob%nivar)
   call allocate( glob%igradient,glob%nivar)
@@ -223,7 +246,11 @@ subroutine dlf_neb_init(nimage,icoord)
   call allocate( neb%cstart,nimage)
   call allocate( neb%cend,nimage)
   ! strictly only necessary for HDLCs
-  call allocate( neb%xcoords,3*glob%nat,nimage)
+  if(glob%tatoms) then
+    call allocate( neb%xcoords,3*glob%nat,nimage)
+  else
+    call allocate( neb%xcoords,glob%nvar,nimage)
+  end if
 
   call allocate(neb%frozen,nimage)
   neb%frozen(:)=.false.
@@ -235,6 +262,8 @@ subroutine dlf_neb_init(nimage,icoord)
     neb%cstart(iimage)=(iimage-1)*neb%varperimage+1
     neb%cend(iimage)=neb%cstart(iimage)+neb%varperimage-1
   end do
+  ! initialise energy array
+  neb%ene(:) = 0.0d0
 
   ! ====================================================================
   ! Define the starting path: linear transit guess
@@ -242,28 +271,46 @@ subroutine dlf_neb_init(nimage,icoord)
 
   ! align the input coordinates to closest overlap
   useimage(:)=0
-  neb%xcoords(:,1)=reshape(glob%xcoords(:,:),(/3*glob%nat/))
   useimage(1)=1
-  do iframe=1,nframe
-    call dlf_cartesian_align(glob%nat,glob%xcoords,glob%xcoords2(:,:,iframe))
-    neb%xcoords(:,1+iframe)=reshape(glob%xcoords2(:,:,iframe),(/3*glob%nat/))
-    useimage(1+iframe)=1
-  end do
+  if(glob%tatoms) then
+    neb%xcoords(:,1)=reshape(glob%xcoords(:,:),(/3*glob%nat/))
+    do iframe=1,min(nframe,nimage-1)
+      if(glob%nat>1) call dlf_cartesian_align(glob%nat,glob%xcoords,glob%xcoords2(:,:,iframe))
+      neb%xcoords(:,1+iframe)=reshape(glob%xcoords2(:,:,iframe),(/3*glob%nat/))
+      useimage(1+iframe)=1
+    end do
+    
+    if(icoord/=190) then
+      ! future climbing image - coords for first image:
+      neb%xcoords(:,nimage)=reshape(glob%xcoords(:,:),(/3*glob%nat/))
+      ! set i- and x-coordinates of all images
+      call dlf_neb_definepath(nimage,useimage)
+      ! future climbing image again:
+      neb%xcoords(:,nimage)=reshape(glob%xcoords(:,:),(/3*glob%nat/))
+    else
+      call dlf_qts_init() ! here only possible w/o alloc_tau
+      if(glob%iopt/=12) call dlf_qts_definepath(nimage,useimage)
+    end if
+  else
+    neb%xcoords(:,1)=reshape(glob%xcoords(:,:),(/glob%nvar/))
+    do iframe=1,nframe
+      neb%xcoords(:,1+iframe)=reshape(glob%xcoords2(:,:,iframe),(/glob%nvar/))
+      useimage(1+iframe)=1
+    end do
+    
+    neb%xcoords(:,nimage)=reshape(glob%xcoords(:,:),(/glob%nvar/))
+
+    ! set i- and x-coordinates of all images
+    call dlf_neb_definepath(nimage,useimage)
+
+    neb%xcoords(:,nimage)=reshape(glob%xcoords(:,:),(/glob%nvar/))
+  end if
   
-  ! future climbing image - coords for first image:
-  neb%xcoords(:,nimage)=reshape(glob%xcoords(:,:),(/3*glob%nat/))
-
-  ! set i- and x-coordinates of all images
-  call dlf_neb_definepath(nimage,useimage)
-
-  ! future climbing image again:
-  neb%xcoords(:,nimage)=reshape(glob%xcoords(:,:),(/3*glob%nat/))
-
   if(neb%optcart) then
     ! use the path guessed in internal coordinates, but optimise in
     ! Cartesians
     glob%icoord=glob%icoord-mod(glob%icoord,10)-30
-    call dlf_direct_get_nivar(ivar)
+    call dlf_direct_get_nivar(0, ivar)
     call dlf_hdlc_destroy
     write(stdout,"('Initial path set. Switching to Cartesian coordinates.')")
     if(ivar/=neb%varperimage) then
@@ -317,6 +364,11 @@ subroutine dlf_neb_init(nimage,icoord)
 
   end if
 
+  if(icoord==190) then
+    ! set tau depending on the coordinates
+    call qts_tau_from_path()
+  end if
+
   ! set x-coordinates of the first image
   ! nothing to do ...
   neb%gradt(:)=0.D0
@@ -325,34 +377,45 @@ subroutine dlf_neb_init(nimage,icoord)
   ! open units for writing the path xyz files
   if(printf>=4) then
     do iimage=1,nimage
-      if(iimage>50) exit
-      write(filename,'(i2)') iimage
+      if(iimage>maxxyzfile) exit
+      if(iimage<10) then
+        write(filename,'("000",i1)') iimage
+      else if(iimage<100) then
+        write(filename,'("00",i2)') iimage
+      else if(iimage<1000) then
+        write(filename,'("0",i3)') iimage
+      else
+        write(filename,'(i4)') iimage
+      end if
       filename="neb_"//trim(adjustl(filename))//".xyz"
       if (glob%iam == 0) open(unit=unitp+iimage,file=filename)
     end do
 
     ! write initial xyz coordinates
     if (glob%iam == 0) then
-       do iimage=1,nimage
-         if(xyzall) then
-           call write_xyz(unitp+iimage,glob%nat,glob%znuc,neb%xcoords(:,iimage))
-         else
-           call write_xyz_active(unitp+iimage,glob%nat,glob%znuc,glob%spec,neb%xcoords(:,iimage))
-         end if
-       end do
+      do iimage=1,nimage
+        if(iimage>maxxyzfile) exit
+        if(xyzall) then
+          call write_xyz(unitp+iimage,glob%nat,glob%znuc,neb%xcoords(:,iimage))
+        else
+          call write_xyz_active(unitp+iimage,glob%nat,glob%znuc,glob%spec,neb%xcoords(:,iimage))
+        end if
+      end do
     end if
   end if
 
   ! initialise climbing image, freezing
   call convergence_get("TOLG",tolg)
   ! set freezing criterion
-  neb%tolfreeze= 1.5D0 * tolg ! 2.0: not as strict as for the climbing image convergence
-  neb%tolclimb=  3.D0 * tolg 
+  neb%tolfreeze= glob%neb_freeze_test * tolg 
+  neb%tolclimb=  glob%neb_climb_test * tolg 
   neb%tclimb=.false.
-  neb%frozen(neb%nimage)=.true.
+  if(icoord/=190) neb%frozen(neb%nimage)=.true.
   neb%allfrozen=.false.
   
-  if(neb%tolclimb< neb%tolfreeze) neb%tolclimb=neb%tolfreeze
+  ! commented out so climbing image can be switched off altogether.
+  ! TODO will need extra code to handle convergence/result in this case
+  ! if(neb%tolclimb< neb%tolfreeze) neb%tolclimb=neb%tolfreeze
 
 end subroutine dlf_neb_init
 !!****
@@ -369,35 +432,40 @@ subroutine dlf_neb_destroy
 !! SOURCE
   use dlf_parameter_module, only: rk,ik
   use dlf_global, only: glob,stderr,printf
-  use dlf_neb, only: neb,unitp
+  use dlf_neb, only: neb,unitp,maxxyzfile
   use dlf_allocate, only: deallocate
   implicit none
   integer :: iimage
 ! **********************************************************************
-  ! deallocate arrays
-  call deallocate( glob%icoords)
-  call deallocate( glob%igradient)
-  call deallocate( glob%step)
-  call deallocate( glob%iweight)
-  call deallocate(neb%ene)
-  call deallocate(neb%cstart)
-  call deallocate(neb%cend)
-  call deallocate(neb%xcoords)
 
-  call deallocate(neb%frozen)
-  call deallocate(neb%gradt)
-  call deallocate(neb%tau)
+  if(glob%icoord==190) then
+    call dlf_qts_destroy() 
+  end if
+
+ ! deallocate arrays
+  if (allocated(glob%icoords)) call deallocate( glob%icoords)
+  if (allocated(glob%igradient)) call deallocate( glob%igradient)
+  if (allocated(glob%step)) call deallocate( glob%step)
+  if (allocated(glob%iweight)) call deallocate( glob%iweight)
+  if (allocated(neb%ene)) call deallocate(neb%ene)
+  if (allocated(neb%cstart)) call deallocate(neb%cstart)
+  if (allocated(neb%cend)) call deallocate(neb%cend)
+  if (allocated(neb%xcoords)) call deallocate(neb%xcoords)
+
+  if (allocated(neb%frozen)) call deallocate(neb%frozen)
+  if (allocated(neb%gradt)) call deallocate(neb%gradt)
+  if (allocated(neb%tau)) call deallocate(neb%tau)
 
   select case (mod(glob%icoord,10))
   ! HDLC
   case(1:4)
-    call dlf_hdlc_destroy
+    call dlf_hdlc_destroy()
   end select
 
   ! close units for writing the path xyz files
   if(printf>=4 .and. glob%iam == 0) then
     do iimage=1,neb%nimage
-      if(iimage>50) exit
+      if(iimage>maxxyzfile) exit
       close(unit=unitp+iimage)
     end do
   end if
@@ -427,25 +495,38 @@ subroutine dlf_neb_xtoi(trerun_energy,external_iimage)
 !! SOURCE
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stderr,stdout,printf
-  use dlf_neb, only: neb,unitp,xyzall
+  use dlf_neb, only: neb,unitp,xyzall,ene_ins_ext,maxxyzfile
   implicit none
   logical, intent(out)  :: trerun_energy
   integer, intent(out)  :: external_iimage ! Which image is the next to calculate
-  integer               :: cstart,cend,jimage
+  integer               :: status ! For parallel NEB tested here
+  integer               :: cstart,cend,jimage,iimage
+  logical               :: tok
 ! **********************************************************************
   ! start and endpoint of current image in array icoords and igradient
   cstart=neb%cstart(neb%iimage)
   cend=neb%cend(neb%iimage)
 
-  call dlf_direct_xtoi(glob%nvar,neb%varperimage,glob%xcoords,glob%xgradient, &
-      glob%icoords(cstart:cend),glob%igradient(cstart:cend))
-  neb%ene(neb%iimage)=glob%energy
+  ! Parallel NEB: X->I transformation is potentially costly so parallelised
+  if (glob%dotask) then
+     call dlf_direct_xtoi(glob%nvar,neb%varperimage,neb%coreperimage,&
+          glob%xcoords,glob%xgradient,glob%icoords(cstart:cend),&
+          glob%igradient(cstart:cend))
+     neb%ene(neb%iimage)=glob%energy
 
-  ! store true gradient (to calculate the work even if this image is frozen)
-  neb%gradt(cstart:cend)=glob%igradient(cstart:cend)
+     ! store true gradient (to calculate the work even if this image is frozen)
+     neb%gradt(cstart:cend)=glob%igradient(cstart:cend)
+  else
+     ! Explicitly set to zero to ensure that the allreduce at the end of the
+     ! cycle gives the correct result
+     glob%icoords(cstart:cend) = 0.d0
+     glob%igradient(cstart:cend) = 0.d0
+     neb%ene(neb%iimage) = 0.d0
+     neb%gradt(cstart:cend) = 0.d0
+  end if
 
   ! write xyz file
-  if(printf>=4.and.glob%tatoms.and.neb%iimage<=50 .and. glob%iam == 0) then
+  if(printf>=4.and.glob%tatoms.and.neb%iimage<=maxxyzfile .and. glob%iam == 0) then
     if(xyzall) then
       call write_xyz(unitp+neb%iimage,glob%nat,glob%znuc,glob%xcoords(:,:))
     else
@@ -468,9 +549,16 @@ subroutine dlf_neb_xtoi(trerun_energy,external_iimage)
           glob%igradient(cstart:cend)=0.D0
           neb%iimage=jimage
 
+          ! Parallel NEB: this is to avoid multiple counting at the end
+          if (.not. glob%dotask) then
+             glob%icoords(cstart:cend) = 0.d0
+             neb%ene(neb%iimage) = 0.d0
+             neb%gradt(cstart:cend) = 0.d0           
+          end if
+
           ! write xyz file
           ! coords i->x
-          if(printf>=4.and.glob%tatoms.and.neb%iimage<=50) then
+          if(printf>=4.and.glob%tatoms.and.neb%iimage<=maxxyzfile) then
             glob%xcoords=reshape(neb%xcoords(:,jimage),(/3,glob%nat/))
             if (glob%iam == 0) then
                if(xyzall) then
@@ -495,7 +583,11 @@ subroutine dlf_neb_xtoi(trerun_energy,external_iimage)
       cstart=neb%cstart(neb%iimage)
       cend=neb%cend(neb%iimage)
       external_iimage=neb%iimage
-      glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/3,glob%nat/))
+      if(glob%tatoms) then
+        glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/3,glob%nat/))
+      else
+        glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/1,glob%nvar/))
+      end if
       !-------------
       return
       !-------------
@@ -506,10 +598,106 @@ subroutine dlf_neb_xtoi(trerun_energy,external_iimage)
   ! LAST IMAGE, ALL GRADIENTS ARE GATHERED
   ! ====================================================================
 
-  call dlf_neb_improved_tangent_neb
+  ! Parallel NEB: check no gradient evaluations in other workgroups failed
+  ! and make all coordinates and gradients available to all workgroups
+  if (glob%ntasks > 1) then
+    ! If it has reached here all gradients have succeeded in this workgroup
+    status = 0
+    call dlf_tasks_int_sum(status, 1)
+    if (status > 0) then
+      call dlf_fail("Task-farmed gradient evaluations failed")
+    end if
+    if (glob%serial_cycle == 0) then
+      call dlf_tasks_real_sum(glob%icoords, glob%nivar)
+      call dlf_tasks_real_sum(glob%igradient, glob%nivar)
+      call dlf_tasks_real_sum(neb%ene, neb%nimage)
+      call dlf_tasks_real_sum(neb%gradt, glob%nivar)
+    end if
+  end if
+  
+  if(glob%icoord==190) then
 
-  trerun_energy=.false.
+    ! freeze boundary points
+    if(neb%tfreeze) then
+      neb%frozen(1)=.true.
+      glob%igradient(neb%cstart(1):neb%cend(1))=0.D0
+      neb%frozen(neb%nimage)=.true.
+      glob%igradient(neb%cstart(neb%nimage):neb%cend(neb%nimage))=0.D0
+    end if
 
+    if(glob%iopt/=12) then
+       tok=.true.
+       call dlf_qts_trans_force(trerun_energy,tok)
+       ! tok always returns true for the time being ...
+
+       if(.not.tok) then
+          call  dlf_fail("No quantum transition state could be found")
+       end if
+
+!!$    tok=.true.
+!!$    call dlf_qts_r(trerun_energy,tok)
+!!$
+!!$    if(.not.tok) then
+!!$      call  dlf_fail("No quantum transition state could be found")
+
+    end if
+    
+    if(trerun_energy) then
+      ! run all E&G calculations once more
+      ! after dlf_qts_trans_force, icoords are set, but not neb%xcoords
+      ! this loop is not parallelized yet - IMPROVE (but dimer should not be used anyway...)
+      do iimage=1,neb%nimage
+        cstart=neb%cstart(iimage)
+        cend=neb%cend(iimage)
+        call dlf_direct_itox(glob%nvar,neb%varperimage,neb%coreperimage, &
+            glob%icoords(cstart:cend),neb%xcoords(:,iimage),tok)
+
+        if(.not.tok) then
+          ! This should never happen, as qTS can only be used in mass-weighted
+          ! cartesians
+          call dlf_fail("Error in i->x coordinate conversion after qTS")
+        end if
+
+      end do
+
+      ! set counter to first image
+      neb%iimage=1
+      glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/3,glob%nat/))
+      external_iimage=neb%iimage
+    end if
+
+  else !(icoord==190)
+
+     if (glob%imicroiter < 2) then
+        ! Standard NEB or macroiterative step
+
+        ! For convergence testing when there is no climbing image,
+        ! set global energy to the energy of the highest image
+        glob%energy = neb%ene(1)
+        do jimage=2, neb%nimage-1
+           if (neb%ene(jimage) > glob%energy) glob%energy = neb%ene(jimage)
+        end do
+    
+        call dlf_neb_improved_tangent_neb
+     else
+        ! Microiterative step
+        ! There are no spring forces in environment region, so 
+        ! simply use the true gradient set above
+        ! (with frozen images set to 0 as above).
+        
+        ! For convergence testing in the microiterative cycles,
+        ! take the average of all energy images
+        glob%energy = 0.0d0
+        do jimage = 1, neb%nimage
+           glob%energy = glob%energy + neb%ene(jimage)
+        end do
+        glob%energy = glob%energy / neb%nimage
+     end if
+
+     trerun_energy=.false.
+
+  end if
+  
   ! this is not used, as no image is calculated until neb_itox is called
   external_iimage=1 
 
@@ -551,6 +739,9 @@ subroutine dlf_neb_improved_tangent_neb
   real(rk)              :: ang13(neb%nimage)! angles between further image-connections
   real(rk)              :: dwork(neb%nimage)! Delta work (grad x path) from 
                                             ! last to present image
+  real(rk)              :: delta(neb%nimage)
+  logical               :: tmass
+  integer               :: iat
 ! **********************************************************************
   
   neb%step=neb%step+1
@@ -614,7 +805,7 @@ subroutine dlf_neb_improved_tangent_neb
   ! ==================================================================
   ! Calculate the tangent vector tau
   ! ==================================================================
-  if(string) then
+  if(1==2.and.string) then
     call string_get_tau
   else
   do iimage=1,neb%nimage-1
@@ -771,6 +962,47 @@ subroutine dlf_neb_improved_tangent_neb
 
   end do
   
+  ! ==================================================================
+  ! string method: add step(s) for L-BFGS to learn
+  ! ==================================================================
+  !delta=0.00001D0
+!!$  call random_number(delta)
+!!$  delta=(delta-0.5D0)*0.01D0
+!!$  print*,"delta",delta
+!!$  if(string.and.1==1) then
+!!$     do iimage=2, neb%nimage-2
+!!$        cstart=neb%cstart(iimage)
+!!$        cend=neb%cend(iimage) 
+!!$        ! move this image
+!!$        glob%icoords(cstart:cend)=glob%icoords(cstart:cend)    +delta*neb%tau(cstart:cend)
+!!$        glob%igradient(cstart:cend)=glob%igradient(cstart:cend)+delta*2.D0*neb%k*neb%tau(cstart:cend)
+!!$        jimage=iimage-1
+!!$        cstart=neb%cstart(jimage)
+!!$        cend=neb%cend(jimage) 
+!!$        glob%igradient(cstart:cend)=glob%igradient(cstart:cend)-delta*neb%k*neb%tau(cstart:cend)
+!!$        jimage=iimage+1
+!!$        cstart=neb%cstart(jimage)
+!!$        cend=neb%cend(jimage) 
+!!$        glob%igradient(cstart:cend)=glob%igradient(cstart:cend)-delta*neb%k*neb%tau(cstart:cend)
+!!$     end do
+!!$     call dlf_lbfgs_step(glob%icoord,glob%igradient,glob%step)
+!!$     do iimage=2, neb%nimage-2
+!!$        cstart=neb%cstart(iimage)
+!!$        cend=neb%cend(iimage) 
+!!$        ! move this image back
+!!$        glob%icoords(cstart:cend)=glob%icoords(cstart:cend)    -delta*neb%tau(cstart:cend)
+!!$        glob%igradient(cstart:cend)=glob%igradient(cstart:cend)-delta*2.D0*neb%k*neb%tau(cstart:cend)
+!!$        jimage=iimage-1
+!!$        cstart=neb%cstart(jimage)
+!!$        cend=neb%cend(jimage) 
+!!$        glob%igradient(cstart:cend)=glob%igradient(cstart:cend)+delta*neb%k*neb%tau(cstart:cend)
+!!$        jimage=iimage+1
+!!$        cstart=neb%cstart(jimage)
+!!$        cend=neb%cend(jimage) 
+!!$        glob%igradient(cstart:cend)=glob%igradient(cstart:cend)+delta*neb%k*neb%tau(cstart:cend)
+!!$     end do
+!!$  end if
+
   ! spawn a climbing image next cycle if all gradients are below neb%tolclimb
   if(tclimbnext) neb%tclimb=.true.
 
@@ -799,6 +1031,20 @@ subroutine dlf_neb_improved_tangent_neb
         2.D0 * ftan(iimage) * neb%tau(cstart:cend)
     fper(iimage)=sqrt(sum(( glob%igradient(cstart:cend)- &
         1.D0*ftan(iimage)*neb%tau(cstart:cend))**2)/dble(neb%varperimage))
+  else
+     ! No climbing image, so set approximate tsmode info using the highest
+     ! energy image.
+     ! Note the convergence info will be set in the main routine as usual
+     ! using information from ALL images
+     iimage = 1
+     do jimage = 2, neb%nimage - 1
+        if (neb%ene(jimage) > neb%ene(iimage)) iimage = jimage
+     end do
+     cstart = neb%cstart(iimage)
+     cend = neb%cend(iimage)
+     call dlf_formstep_set_tsmode(1,-1,neb%ene(iimage)) ! send energy
+     call dlf_formstep_set_tsmode(glob%nvar,0,neb%xcoords(:,iimage)) ! TS-geometry
+     call dlf_formstep_set_tsmode(neb%varperimage,11,neb%tau(cstart:cend)) ! TS-mode     
   end if
 
   ! ====================================================================
@@ -873,10 +1119,11 @@ subroutine dlf_neb_improved_tangent_neb
 
         if(printl>=2) then
           write(stdout,"('All images are frozen and no climbing image &
-              &exists due to a monotonic path')")
-          write(stdout,"('Assigning the calculation as converged, even &
-              &though each image is only converged',/,' to a maximum &
-              &gradient component of ',es10.4)") neb%tolfreeze
+              &exists.')")
+          write(stdout,"('Either the climbing image threshold &
+              &was not reached or the path is monotonic.')")
+          write(stdout,"('Maximum gradient component converged to the frozen &
+              &image tolerance of ',es10.4)") neb%tolfreeze
         end if
 
         ! set complete gradient to 0
@@ -935,10 +1182,15 @@ subroutine dlf_neb_improved_tangent_neb
 
   ! write information files
   if(printl>=2.and.printf>=2) then
+    tmass=(neb%varperimage==glob%nat*3)
     ! list of energies (and work?)
     if (glob%iam == 0) then
-       open(unit=501,file="nebinfo")
-       write(501,"('# Path length     Energy      Work')")
+      open(unit=501,file="nebinfo")
+      if(tmass) then
+        write(501,"('# Path length     Energy      Work       Effective Mass')")
+      else
+        write(501,"('# Path length     Energy      Work')")
+      end if
     end if
     do iimage=1,neb%nimage-1
       if(iimage==1) then
@@ -946,8 +1198,20 @@ subroutine dlf_neb_improved_tangent_neb
       else
         svar=sum(dist(1:iimage-1))
       end if
-      if (glob%iam == 0) write(501,"(f10.5,2f15.10)") svar,&
-                         neb%ene(iimage)-neb%ene(1),sum(dwork(1:iimage))
+      if (glob%iam == 0) then
+        if(tmass) then
+          ! neb%tau is normalized tangent
+          svar2=0.D0 ! reduced mass
+          do iat=1,glob%nat
+            svar2=svar2+sum((neb%tau(neb%cstart(iimage)+(iat-1)*3:&
+                neb%cstart(iimage)+(iat-1)*3+2))**2)/glob%mass(iat)
+          end do
+          svar2=1.D0/svar2
+          write(501,"(f10.5,3f15.10)") svar,neb%ene(iimage)-neb%ene(1),sum(dwork(1:iimage)),svar2
+        else
+          write(501,"(f10.5,2f15.10)") svar,neb%ene(iimage)-neb%ene(1),sum(dwork(1:iimage))
+        end if
+      end if
     end do
     if (glob%iam == 0) close(501)
     
@@ -963,7 +1227,10 @@ subroutine dlf_neb_improved_tangent_neb
       !end if
       ! write chemshell fragments as well (or any other format used by dlf_put_coords)
       svar=neb%ene(iimage)
-      if(neb%maximage>0) svar=neb%ene(neb%nimage)
+      ! The commented out line ensured that the final energy given to chemshell
+      ! was that of the climbing image. A better solution is not to save the energy
+      ! in put_coords if the mode < 0
+      ! if(neb%maximage>0) svar=neb%ene(neb%nimage)
       call dlf_put_coords(glob%nat,-iimage,svar,neb%xcoords(:,iimage),glob%iam)
     end do
     if (glob%iam == 0) close(501)
@@ -1000,6 +1267,10 @@ subroutine dlf_neb_checkstep
     end if
   end do
   
+  if(glob%icoord==190) return ! do nothing in case of qTS search
+
+  if (glob%imicroiter == 2) return ! do not correct paths during microiterations
+
   ! calculate the angles:
   angle12(:)=0.D0
   angle13(:)=0.D0
@@ -1028,6 +1299,9 @@ subroutine dlf_neb_checkstep
       treduce(jimage)=.false. ! will be covered now
     end do
     print*,"Resetting images",iimage," to ",jimage-1
+    ! This does not appear to cause problems for microiterative opts
+    ! (at least, no more than the problems it causes for standard opts)
+    ! but keeping an eye on it...
     do mimage=iimage,jimage-1
       svar=dble(mimage - (iimage-1))/dble(jimage - (iimage-1))
       glob%step(neb%cstart(mimage):neb%cend(mimage))= &
@@ -1094,7 +1368,7 @@ subroutine dlf_neb_itox(external_iimage)
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stdout,printf,printl
   use dlf_allocate, only: allocate,deallocate
-  use dlf_neb, only: neb,unitp,xyzall
+  use dlf_neb, only: neb,unitp,xyzall,maxxyzfile
   implicit none
   integer ,intent(out)  :: external_iimage
   integer               :: cstart,cend,iimage,mx(1),ivar
@@ -1107,7 +1381,7 @@ subroutine dlf_neb_itox(external_iimage)
   ! ====================================================================
   ! Determine the initial position of the climbing image
   ! ====================================================================
-  if(neb%tclimb .and. neb%frozen(neb%nimage)) then
+  if(neb%tclimb .and. neb%frozen(neb%nimage) .and. glob%imicroiter < 2) then
     ! initialise climbing image
     mx=maxloc(neb%ene(2:neb%nimage-2))
     ivar=mx(1)+1 ! maximum image
@@ -1174,7 +1448,11 @@ subroutine dlf_neb_itox(external_iimage)
   end if ! (neb%tclimb .and. neb%frozen(neb%nimage))
   if(neb%iimage/=neb%nimage) print*,"Warning, NEB images have been tampered with!"
 
-  call allocate( xtmp,3*glob%nat,neb%nimage)
+  if (glob%tatoms) then
+     call allocate( xtmp,3*glob%nat,neb%nimage)
+  else
+     call allocate( xtmp,glob%nvar,neb%nimage)
+  end if
   tfail=.false.
   xtmp(:,:)=neb%xcoords(:,:) ! starting guess and frozen structures
   do iimage=1,neb%nimage
@@ -1183,7 +1461,7 @@ subroutine dlf_neb_itox(external_iimage)
     end if
     cstart=neb%cstart(iimage)
     cend=neb%cend(iimage)
-    call dlf_direct_itox(glob%nvar,neb%varperimage, &
+    call dlf_direct_itox(glob%nvar,neb%varperimage,neb%coreperimage, &
       glob%icoords(cstart:cend),xtmp(:,iimage),tok)
     if(.not.tok) then
       tfail=.true.
@@ -1198,13 +1476,13 @@ subroutine dlf_neb_itox(external_iimage)
         "('HDLC coordinate breakdown. Recalculating HDLCs and &
         &restarting optimiser and NEB.')")
     call dlf_hdlc_reset
-    call dlf_hdlc_create(glob%nat,glob%spec,glob%znuc,neb%nimage, &
-        neb%xcoords,glob%weight,glob%mass)
+    call dlf_hdlc_create(glob%nat,neb%coreperimage,glob%spec,glob%micspec,&
+        glob%znuc,neb%nimage,neb%xcoords,glob%weight,glob%mass)
 
     ! calculate iweights
     ! first image
-    call dlf_hdlc_getweight(glob%nat,glob%nivar,glob%weight, &
-        glob%iweight(1:neb%varperimage))
+    call dlf_hdlc_getweight(glob%nat,glob%nivar,neb%coreperimage,glob%micspec,&
+        glob%weight,glob%iweight(1:neb%varperimage))
     ! copy weights to all other images
     do iimage=2,neb%nimage
       ivar=neb%varperimage*(iimage-1)+1
@@ -1232,8 +1510,16 @@ subroutine dlf_neb_itox(external_iimage)
         cstart=neb%cstart(iimage)
         cend=neb%cend(iimage)
         glob%igradient(cstart:cend)=0.D0
+
+        ! Parallel NEB: this is to avoid multiple counting at the end of xtoi
+        if (glob%mytask /= 0) then
+           glob%icoords(cstart:cend) = 0.d0
+           neb%ene(iimage) = 0.d0
+           neb%gradt(cstart:cend) = 0.d0           
+        end if
+        
         ! write xyz file
-        if(printf>=4.and.glob%tatoms.and.neb%iimage<=50 .and. glob%iam == 0) then
+        if(printf>=4.and.glob%tatoms.and.neb%iimage<=maxxyzfile .and. glob%iam == 0) then
           if(xyzall) then
             call write_xyz(unitp+iimage,glob%nat,glob%znuc,neb%xcoords(:,iimage))
           else
@@ -1250,7 +1536,11 @@ subroutine dlf_neb_itox(external_iimage)
   end if
 
   external_iimage=neb%iimage
-  glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/3,glob%nat/))
+  if(glob%tatoms) then
+     glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/3,glob%nat/))
+  else
+     glob%xcoords=reshape(neb%xcoords(:,neb%iimage),(/1,glob%nvar/))
+  end if
 
 end subroutine dlf_neb_itox
 !!****
@@ -1309,7 +1599,7 @@ subroutine dlf_neb_definepath(nimage,useimage)
     cstart=neb%cstart(iimage)
     cend=neb%cend(iimage)
     !print*," ((((((((((((((((((((( IMAGE",iimage," )))))))))))))))))))))))))))"
-    call dlf_direct_xtoi(glob%nvar,neb%varperimage,neb%xcoords(:,iimage), &
+    call dlf_direct_xtoi(glob%nvar,neb%varperimage,neb%coreperimage,neb%xcoords(:,iimage), &
         glob%xgradient,glob%icoords(cstart:cend),glob%igradient(cstart:cend))
     ! distance to last used image
     if(iimage>1) then
@@ -1468,7 +1758,7 @@ subroutine dlf_neb_definepath(nimage,useimage)
           + svar*neb%xcoords(:,jimage)
     end if
     !print*," ((((((((((((((((((((( IMAGE",iimage," i->x )))))))))))))))))))))))))))"
-    call dlf_direct_itox(glob%nvar,neb%varperimage, &
+    call dlf_direct_itox(glob%nvar,neb%varperimage,neb%coreperimage, &
         glob%icoords(cstart:cend),neb%xcoords(:,iimage),tok)
     if(tok) then
       xok(iimage)=1
@@ -1496,7 +1786,7 @@ subroutine dlf_neb_definepath(nimage,useimage)
       neb%xcoords(:,iimage)=(1.D0-svar)*neb%xcoords(:,iimage+1) &
           + svar*neb%xcoords(:,jimage)
       !print*," ((((((((((((((((((((( IMAGE",iimage," i->x back))))))))))))))))))))))))"
-      call dlf_direct_itox(glob%nvar,neb%varperimage, &
+      call dlf_direct_itox(glob%nvar,neb%varperimage,neb%coreperimage, &
           glob%icoords(cstart:cend),neb%xcoords(:,iimage),tok)
       if(tok) then
         xok(iimage)=1
@@ -1528,7 +1818,7 @@ subroutine dlf_neb_definepath(nimage,useimage)
   do iimage=2,nimage-2
     cstart=neb%cstart(iimage)
     cend=neb%cend(iimage)
-    call dlf_direct_itox(glob%nvar,neb%varperimage, &
+    call dlf_direct_itox(glob%nvar,neb%varperimage,neb%coreperimage, &
         glob%icoords(cstart:cend),neb%xcoords(:,iimage),tok)
     if(.not.tok) then
       !print*,"Failed at image ",iimage
@@ -1561,7 +1851,7 @@ subroutine string_get_tau
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stdout,printl
   use dlf_neb, only: neb,unitp
-  use bspline, only: spline_init, spline_create, spline_get, &
+  use dlf_bspline, only: spline_init, spline_create, spline_get, &
       spline_destroy
   implicit none
   integer  :: ivar,iimage,cstart,cend
@@ -1587,7 +1877,7 @@ subroutine string_get_tau
     ! get derivatives of the spline
     do iimage=1,neb%nimage-1
       call spline_get(ivar,stringpos(iimage),svar, &
-          neb%tau(neb%cstart(iimage)+ivar-1))
+          neb%tau(neb%cstart(iimage)+ivar-1),svar)
     end do
   end do
 
@@ -1632,7 +1922,7 @@ subroutine string_reparametrise(treduce)
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob,stdout,printl
   use dlf_neb, only: neb,unitp
-  use bspline, only: spline_init, spline_create, spline_get, &
+  use dlf_bspline, only: spline_init, spline_create, spline_get, &
       spline_destroy
   use dlf_stat ! REMOVE JK
   implicit none
@@ -1640,14 +1930,18 @@ subroutine string_reparametrise(treduce)
   integer  :: ivar,iimage,cstart,cend
   real(rk) :: stringpos(neb%nimage-1) ! 0..1
   real(rk) :: stringval(neb%nimage-1), svar
-  integer, parameter :: npoint=100 ! number of points interpolated
+  integer, parameter :: npoint=300 ! number of points interpolated
   real(rk) :: length(npoint) ! length of the string up to that point
   real(rk) :: energy(npoint) ! energy of the string (interpolated)
   real(rk) :: length_img(neb%nimage-1) ! ength of the string up to that
                                        ! image
   integer  :: ipoint,low,high,jimage,count
   real(rk) :: step,alpha,yvar,yvar2,dyvar,new_length,ene
+  integer :: step_print
+  real(rk):: svar2
+  real(rk) :: tmp_step(glob%nivar),tmp_grad(glob%nivar),tmp_tau(neb%varperimage)
 ! **********************************************************************
+  step_print=40
 
   if(printl>=4) write(stdout,'(a)') "Reparametrising string"
 
@@ -1676,7 +1970,7 @@ subroutine string_reparametrise(treduce)
 
   do ivar=1,neb%varperimage+1
 
-    ! define y-value of the spline
+    ! define y-value of the spline: coordinates and energy
     count=0
     do iimage=1,neb%nimage-1
       if(.not.treduce(iimage)) then
@@ -1697,7 +1991,7 @@ subroutine string_reparametrise(treduce)
   ! energy
   do ipoint=1,npoint
     alpha=dble(ipoint-1)/dble(npoint-1)
-    call spline_get(neb%varperimage+1,alpha,energy(ipoint),dyvar)
+    call spline_get(neb%varperimage+1,alpha,energy(ipoint),dyvar,svar)
  !   print*,ipoint,energy(ipoint)
   end do
 
@@ -1709,8 +2003,8 @@ subroutine string_reparametrise(treduce)
     length(ipoint)=0.D0
     alpha=dble(ipoint-1)/dble(npoint-1)
     do ivar=1,neb%varperimage
-      call spline_get(ivar,alpha,yvar,dyvar)
-      call spline_get(ivar,alpha-step,yvar2,dyvar)
+      call spline_get(ivar,alpha,yvar,dyvar,svar)
+      call spline_get(ivar,alpha-step,yvar2,dyvar,svar)
       length(ipoint)=length(ipoint)+(yvar2-yvar)**2
     end do
     ene=0.5D0*(energy(ipoint)+energy(ipoint-1))-minval(energy)
@@ -1746,6 +2040,7 @@ subroutine string_reparametrise(treduce)
   ! set non-frozen images to the optimum position on the string
   low=1
   high=neb%nimage-1
+  svar2=0.D0
   do iimage=1,neb%nimage-1
     if(neb%frozen(iimage)) then
       low=iimage
@@ -1777,7 +2072,9 @@ subroutine string_reparametrise(treduce)
 
       ! recalculate the step
       do ivar=1,neb%varperimage
-        call spline_get(ivar,alpha,yvar,dyvar)
+        call spline_get(ivar,alpha,yvar,dyvar,svar)
+        svar2=svar2+(yvar - &
+            glob%icoords(neb%cstart(iimage)+ivar-1))**2
         glob%step(neb%cstart(iimage)+ivar-1) = yvar - &
             glob%icoords(neb%cstart(iimage)+ivar-1)
       end do
@@ -1925,3 +2222,6 @@ subroutine dlf_checkpoint_neb_read(tok)
 
 10 format("Checkpoint reading WARNING: ",a)
 end subroutine dlf_checkpoint_neb_read
+
+!!****
+

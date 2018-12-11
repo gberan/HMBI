@@ -22,16 +22,16 @@
 !! R_midpoint and R_end is dimer%delta
 !!
 !! DATA
-!!  $Date: 2010-05-07 19:30:43 $
+!!  $Date: 2006-12-13 15:55:10 +0000 (Wed, 13 Dec 2006) $
 !!  $Rev: 29 $
-!!  $Author: gberan $
+!!  $Author: jk37 $
 !!  $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/trunk/dlf_dimer.f90 $
-!!  $Id: dlf_dimer.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!!  $Id: dlf_dimer.f90 29 2006-12-13 15:55:10Z jk37 $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -53,7 +53,8 @@
 module dlf_dimer
   use dlf_parameter_module, only: rk
   type dimer_type
-    integer               :: varperimage
+    integer               :: varperimage  ! no. of icoords per image
+    integer               :: coreperimage ! no. of inner region icoords per image
     integer               :: status
     integer               :: mode !:
       ! 0: all rotations covered by the optimiser
@@ -167,7 +168,7 @@ subroutine dlf_dimer_init(icoord)
       v2=glob%xcoords(:,1)-glob%xcoords(:,3)
       vnormal(1)=v1(2)*v2(3)-v1(3)*v2(2)
       vnormal(2)=v1(3)*v2(1)-v1(1)*v2(3)
-      vnormal(1)=v1(1)*v2(2)-v1(2)*v2(1)
+      vnormal(3)=v1(1)*v2(2)-v1(2)*v2(1)
       tplanar=.true.
       do iat=4,glob%nat
         if(abs(sum(vnormal*(glob%xcoords(:,1)-glob%xcoords(:,iat)))) &
@@ -201,7 +202,8 @@ subroutine dlf_dimer_init(icoord)
   ! Cartesian coordinates
   case (0,5)
     ! define the number of internal variables (covering all images)
-    call dlf_direct_get_nivar(dimer%varperimage)
+    call dlf_direct_get_nivar(0, dimer%varperimage)
+    call dlf_direct_get_nivar(1, dimer%coreperimage)
 
     ! calculate iweights
     call allocate( glob%iweight,dimer%varperimage*2)
@@ -231,16 +233,17 @@ subroutine dlf_dimer_init(icoord)
     call dlf_hdlc_init(glob%nat,glob%spec,mod(glob%icoord,10),glob%ncons, &
         glob%icons,glob%nconn,glob%iconn)
 
-    ! create hdlc with midpoint as coordinates
-    call dlf_hdlc_create(glob%nat,glob%spec,glob%znuc,1, &
-        glob%xcoords(:,:),glob%weight,glob%mass)
+    call dlf_hdlc_get_nivar(0, dimer%varperimage)
+    call dlf_hdlc_get_nivar(1, dimer%coreperimage)
 
-    call dlf_hdlc_get_nivar(dimer%varperimage)
+    ! create hdlc with midpoint as coordinates
+    call dlf_hdlc_create(glob%nat,dimer%coreperimage,glob%spec,glob%micspec,glob%znuc,1, &
+        glob%xcoords(:,:),glob%weight,glob%mass)
 
     ! calculate iweights
     call allocate( glob%iweight,dimer%varperimage*2)
-    call dlf_hdlc_getweight(glob%nat,dimer%varperimage,glob%weight, &
-        glob%iweight(1:dimer%varperimage))
+    call dlf_hdlc_getweight(glob%nat,dimer%varperimage,dimer%coreperimage,glob%micspec,&
+        glob%weight,glob%iweight(1:dimer%varperimage))
     ! copy weights to other image
     glob%iweight(dimer%varperimage+1:2*dimer%varperimage)=glob%iweight(1:dimer%varperimage)
 
@@ -250,7 +253,8 @@ subroutine dlf_dimer_init(icoord)
   end select
 
   ! simple dimer method:
-  glob%nivar=2*dimer%varperimage
+  glob%nivar = 2 * dimer%varperimage
+  glob%nicore = 2 * dimer%coreperimage
 
   if(glob%tatoms) then
     call allocate( dimer%xtangent, 3, glob%nat)
@@ -279,8 +283,9 @@ subroutine dlf_dimer_init(icoord)
   !Set icoords(1)
   glob%xgradient=0.D0
 
-  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-      glob%icoords(1:dimer%varperimage),glob%igradient(1:dimer%varperimage))
+  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+      glob%xcoords,glob%xgradient,glob%icoords(1:dimer%varperimage), & 
+      glob%igradient(1:dimer%varperimage))
   dimer%xmidpoint(:,:)=glob%xcoords(:,:)
 
   ! Guess xcoords2 at distance delta from xcoords
@@ -294,8 +299,9 @@ subroutine dlf_dimer_init(icoord)
   glob%xcoords(:,:)=glob%xcoords(:,:) + dimer%xtangent(:,:)
 
   ! set icoords2 to the guessed endpoint
-  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-      glob%icoords(dimer%varperimage+1:),glob%igradient(1:dimer%varperimage))
+  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+      glob%xcoords,glob%xgradient,glob%icoords(dimer%varperimage+1:), &
+      glob%igradient(1:dimer%varperimage))
 
   ! set xcoords back for first step
   glob%xcoords(:,:)=glob%xcoords(:,:) - dimer%xtangent(:,:)
@@ -351,26 +357,30 @@ subroutine dlf_dimer_destroy
   use dlf_dimer
   use dlf_allocate, only: deallocate
   implicit none
+  logical :: exists
 ! **********************************************************************
   ! deallocate arrays
-  call deallocate( glob%icoords)
-  call deallocate( glob%igradient)
-  call deallocate( glob%step)
-  call deallocate( glob%iweight)
+  if (allocated(glob%icoords)) call deallocate( glob%icoords)
+  if (allocated(glob%igradient)) call deallocate( glob%igradient)
+  if (allocated(glob%step)) call deallocate( glob%step)
+  if (allocated(glob%iweight)) call deallocate( glob%iweight)
 
-  call deallocate( dimer%rotgrad)
-  call deallocate( dimer%rotdir)
-  call deallocate( dimer%oldrotgrad)
-  call deallocate( dimer%oldrotdir)
-  call deallocate( dimer%vector)
-  call deallocate( dimer%theta)
-  call deallocate( dimer%grad1)
+  if (allocated(dimer%rotgrad)) call deallocate( dimer%rotgrad)
+  if (allocated(dimer%rotdir)) call deallocate( dimer%rotdir)
+  if (allocated(dimer%oldrotgrad)) call deallocate( dimer%oldrotgrad)
+  if (allocated(dimer%oldrotdir)) call deallocate( dimer%oldrotdir)
+  if (allocated(dimer%vector)) call deallocate( dimer%vector)
+  if (allocated(dimer%theta)) call deallocate( dimer%theta)
+  if (allocated(dimer%grad1)) call deallocate( dimer%grad1)
 
   if(rot_lbfgs) then
     ! dimer%oldrotdir, dimer%oldrotgrad are not needed!
-    call dlf_lbfgs_select("dimer rotation",.false.)
-    call dlf_lbfgs_destroy
-    call dlf_lbfgs_deselect
+    call dlf_lbfgs_exists("dimer rotation", exists)
+    if (exists) then
+       call dlf_lbfgs_select("dimer rotation",.false.)
+       call dlf_lbfgs_destroy
+       call dlf_lbfgs_deselect
+    end if
   end if
 
   select case (mod(glob%icoord,10))
@@ -379,8 +389,8 @@ subroutine dlf_dimer_destroy
     call dlf_hdlc_destroy
   end select
 
-  call deallocate( dimer%xtangent)
-  call deallocate( dimer%xmidpoint)
+  if (allocated(dimer%xtangent)) call deallocate( dimer%xtangent)
+  if (allocated(dimer%xmidpoint)) call deallocate( dimer%xmidpoint)
 
   ! rubbish for printing
   if(.not.glob%tatoms) then
@@ -418,6 +428,14 @@ subroutine dlf_dimer_xtoi(trerun_energy,testconv)
   real(rk)              :: phi1
   logical               :: exists
 ! **********************************************************************
+
+  ! If in a microiterative loop, just xtoi the midpoint
+  if (glob%imicroiter == 2) then
+     call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+          glob%xcoords,glob%xgradient,glob%icoords(1:dimer%varperimage), &
+          glob%igradient(1:dimer%varperimage))
+     return
+  end if
 
   ! ====================================================================
   ! Optimise the rotation
@@ -493,14 +511,17 @@ subroutine dlf_dimer_xtoi(trerun_energy,testconv)
     
     ! print frequency in case of mass-weighted coordinates
     if(glob%massweight .and. printl>=2) then
-      ! sqrt(H/u)/a_B/2/pi/c / 100
-      svar=sqrt( 4.35974417D-18/ 1.66053886D-27 ) / ( 2.D0 * pi * &
-          0.5291772108D-10 * 299792458.D0) / 100.D0
-      svar=sqrt(abs(dimer%curve)) * svar
-      if(dimer%curve<0.D0) svar=-svar
-      write(stdout,"('Frequency of transition mode',f10.3,' cm^-1 &
-          &(negative value denotes imaginary frequency)')") &
-          svar
+
+      call dlf_print_wavenumber(dimer%curve,.true.)
+
+!!$      ! sqrt(H/u)/a_B/2/pi/c / 100
+!!$      svar=sqrt( 4.35974417D-18/ 1.66053886D-27 ) / ( 2.D0 * pi * &
+!!$          0.5291772108D-10 * 299792458.D0) / 100.D0
+!!$      svar=sqrt(abs(dimer%curve)) * svar
+!!$      if(dimer%curve<0.D0) svar=-svar
+!!$      write(stdout,"('Frequency of transition mode',f10.3,' cm^-1 &
+!!$          &(negative value denotes imaginary frequency)')") &
+!!$          svar
     end if
     
     
@@ -571,8 +592,9 @@ subroutine dlf_dimer_was_midpoint(trerun_energy,testconv)
   call dlf_formstep_set_tsmode(1,-1,glob%energy) ! send energy
   call dlf_formstep_set_tsmode(glob%nvar,0,glob%xcoords) ! TS-geometry
 
-  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-      glob%icoords(1:dimer%varperimage),glob%igradient(1:dimer%varperimage))
+  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+      glob%xcoords,glob%xgradient,glob%icoords(1:dimer%varperimage), &
+      glob%igradient(1:dimer%varperimage))
 
   ! set xcoords to endpoint 1:
 
@@ -589,7 +611,7 @@ subroutine dlf_dimer_was_midpoint(trerun_energy,testconv)
   end if
 
   !Transform to x-coords
-  call dlf_direct_itox(glob%nvar,dimer%varperimage, &
+  call dlf_direct_itox(glob%nvar,dimer%varperimage,dimer%coreperimage, &
       glob%icoords(1:dimer%varperimage),glob%xcoords(:,:),tok)
   if(.not.tok) then
 
@@ -597,23 +619,25 @@ subroutine dlf_dimer_was_midpoint(trerun_energy,testconv)
         "('HDLC coordinate breakdown at dimer endpoint. Recalculating HDLCs and &
         &restarting optimiser and dimer.')")
     call dlf_hdlc_reset
-    call dlf_hdlc_create(glob%nat,glob%spec,glob%znuc,1,glob%xcoords,&
-        glob%weight,glob%mass)
+    call dlf_hdlc_create(glob%nat,dimer%coreperimage,glob%spec,glob%micspec,&
+        glob%znuc,1,glob%xcoords,glob%weight,glob%mass)
     ! recalculate iweights
-    call dlf_hdlc_getweight(glob%nat,dimer%varperimage,glob%weight, &
-        glob%iweight(1:dimer%varperimage))
+    call dlf_hdlc_getweight(glob%nat,dimer%varperimage,dimer%coreperimage,glob%micspec,&
+        glob%weight,glob%iweight(1:dimer%varperimage))
     ! copy weights to other image
     glob%iweight(dimer%varperimage+1:2*dimer%varperimage)= &
         glob%iweight(1:dimer%varperimage)
     
     call dlf_formstep_restart
     ! calculate internal coordinates of midpoint
-    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-        glob%icoords(1:dimer%varperimage),glob%igradient(1:dimer%varperimage))
+    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+        glob%xcoords,glob%xgradient,glob%icoords(1:dimer%varperimage), &
+        glob%igradient(1:dimer%varperimage))
     !calculate internal coordinates of endpoint 1
     glob%xcoords=glob%xcoords+dimer%xtangent
-    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-        glob%icoords(dimer%varperimage+1:),glob%igradient(dimer%varperimage+1:))
+    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+        glob%xcoords,glob%xgradient,glob%icoords(dimer%varperimage+1:), &
+        glob%igradient(dimer%varperimage+1:))
     ! now first half of internal gradient is correct, second half is
     ! not, but will be recalculated anyway.
     glob%icoords(dimer%varperimage+1:)=glob%icoords(dimer%varperimage+1:) -&
@@ -701,8 +725,9 @@ subroutine dlf_dimer_was_g1(internal,stoprot)
   ! ==================================================================
   
   if(.not.internal) then
-    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-        glob%icoords(dimer%varperimage+1:),glob%igradient(dimer%varperimage+1:))
+    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+        glob%xcoords,glob%xgradient,glob%icoords(dimer%varperimage+1:), &
+        glob%igradient(dimer%varperimage+1:))
     ! transform coords:
     dimer%vector(:)=glob%icoords(dimer%varperimage+1:)-glob%icoords(1:dimer%varperimage)
     glob%icoords(dimer%varperimage+1:)=dimer%vector(:)
@@ -791,7 +816,7 @@ subroutine dlf_dimer_was_g1(internal,stoprot)
           cos(dimer%phi) * dimer%delta * dimer%vector(:) + &
           sin(dimer%phi) * dimer%delta * dimer%theta(:)
       !Transform to x-coords
-      call dlf_direct_itox(glob%nvar,dimer%varperimage, &
+      call dlf_direct_itox(glob%nvar,dimer%varperimage,dimer%coreperimage, &
           glob%icoords(dimer%varperimage+1:),glob%xcoords(:,:),tok)
       if(.not.tok) call dlf_fail("Dimer internal->x conversion failed C")
 
@@ -854,8 +879,9 @@ subroutine dlf_dimer_was_g1prime(stoprot,phi1)
   ! store endpoint gradient before rotation
   dimer%grad1=glob%igradient(dimer%varperimage+1:)
 
-  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-      glob%icoords(dimer%varperimage+1:),glob%igradient(dimer%varperimage+1:))
+  call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+      glob%xcoords,glob%xgradient,glob%icoords(dimer%varperimage+1:), &
+      glob%igradient(dimer%varperimage+1:))
 
   call allocate(vector2,dimer%varperimage)
   vector2=(cos(dimer%phi) * dimer%vector(:) + sin(dimer%phi) * dimer%theta(:))
@@ -923,7 +949,7 @@ subroutine dlf_dimer_was_g1prime(stoprot,phi1)
   glob%icoords(dimer%varperimage+1:)=glob%icoords(1:dimer%varperimage) + &
       dimer%delta * vector2(:)
   !Transform to x-coords
-  call dlf_direct_itox(glob%nvar,dimer%varperimage, &
+  call dlf_direct_itox(glob%nvar,dimer%varperimage,dimer%coreperimage, &
       glob%icoords(dimer%varperimage+1:),glob%xcoords(:,:),tok)
   if(.not.tok) call dlf_fail("Dimer internal->x conversion failed D")
 
@@ -1005,6 +1031,7 @@ subroutine dlf_dimer_checkstep
         glob%icoords(dimer%varperimage+1:)
     ss= ddot(dimer%varperimage,glob%step(dimer%varperimage+1:), 1, &
         glob%step(dimer%varperimage+1:), 1)
+
     write(*,'("Distance scaled from",F10.5," to",F10.5)') SQRT(ss),dimer%delta
     glob%step(dimer%varperimage+1:) = glob%step(dimer%varperimage+1:) &
         / dsqrt(ss) * dimer%delta
@@ -1014,6 +1041,7 @@ subroutine dlf_dimer_checkstep
         glob%step(dimer%varperimage+1:)= - glob%step(dimer%varperimage+1:)
     glob%step(dimer%varperimage+1:) = glob%step(dimer%varperimage+1:) - &
         glob%icoords(dimer%varperimage+1:)
+
   end if
   ! rubbish for printing >>>>>>
   if(dimer%curve>0.D0) then
@@ -1043,7 +1071,7 @@ subroutine dlf_dimer_checkstep
     end if
   end if
   ! <<<< end of rubbish for printing
-  
+
   ! calculate the angle between the new normal and the old normal:
   ! Maximum change is 90 deg, as only the direction, not the orientation is relevant
   if((.not.dimer%toptdir) .and. printl>=2) then
@@ -1095,7 +1123,7 @@ subroutine dlf_dimer_itox
   real(rk)              :: svar
   real(RK) ,external    :: ddot
 ! **********************************************************************
-  call dlf_direct_itox(glob%nvar,dimer%varperimage, &
+  call dlf_direct_itox(glob%nvar,dimer%varperimage,dimer%coreperimage, &
       glob%icoords(1:dimer%varperimage),glob%xcoords(:,:),tok)
   if(.not.tok) then
     ! we have to cancel that step ...
@@ -1104,12 +1132,12 @@ subroutine dlf_dimer_itox
         &restarting optimiser and dimer.')")
     call dlf_hdlc_reset
     glob%xcoords=dimer%xmidpoint
-    call dlf_hdlc_create(glob%nat,glob%spec,glob%znuc,1,glob%xcoords,&
-        glob%weight,glob%mass)
+    call dlf_hdlc_create(glob%nat,dimer%coreperimage,glob%spec,glob%micspec,&
+        glob%znuc,1,glob%xcoords,glob%weight,glob%mass)
 
     ! recalculate iweights
-    call dlf_hdlc_getweight(glob%nat,dimer%varperimage,glob%weight, &
-        glob%iweight(1:dimer%varperimage))
+    call dlf_hdlc_getweight(glob%nat,dimer%varperimage,dimer%coreperimage,glob%micspec,&
+        glob%weight,glob%iweight(1:dimer%varperimage))
     ! copy weights to other image
     glob%iweight(dimer%varperimage+1:2*dimer%varperimage)= &
         glob%iweight(1:dimer%varperimage)
@@ -1127,13 +1155,15 @@ subroutine dlf_dimer_itox
 
 
     ! calculate internal coordinates of midpoint
-    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-        glob%icoords(1:dimer%varperimage),glob%igradient(1:dimer%varperimage))
+    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+        glob%xcoords,glob%xgradient,glob%icoords(1:dimer%varperimage), &
+        glob%igradient(1:dimer%varperimage))
 
     !calculate internal coordinates of endpoint 1
     glob%xcoords=glob%xcoords+dimer%xtangent
-    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,glob%xcoords,glob%xgradient, &
-        glob%icoords(dimer%varperimage+1:),glob%igradient(dimer%varperimage+1:))
+    call dlf_direct_xtoi(glob%nvar,dimer%varperimage,dimer%coreperimage, &
+        glob%xcoords,glob%xgradient,glob%icoords(dimer%varperimage+1:), &
+        glob%igradient(dimer%varperimage+1:))
     ! all the gradients are rubbish, but will be recalculated anyway
 
     ! make second set of icoords relative

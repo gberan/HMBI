@@ -10,16 +10,16 @@
 !! Line search or trust radius
 !!
 !! DATA
-!! $Date: 2010-05-07 19:30:43 $
-!! $Rev: 307 $
-!! $Author: gberan $
-!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.3/dlf_scalestep.f90 $
-!! $Id: dlf_scalestep.f90,v 1.1 2010-05-07 19:30:43 gberan Exp $
+!! $Date: 2013-08-07 14:08:09 +0100 (Wed, 07 Aug 2013) $
+!! $Rev: 529 $
+!! $Author: twk $
+!! $URL: http://ccpforge.cse.rl.ac.uk/svn/dl-find/branches/release_chemsh3.6/dlf_scalestep.f90 $
+!! $Id: dlf_scalestep.f90 529 2013-08-07 13:08:09Z twk $
 !!
 !! COPYRIGHT
 !!
-!!  Copyright 2007 Johannes Kaestner (j.kaestner@dl.ac.uk),
-!!  Tom Keal (keal@mpi-muelheim.mpg.de)
+!!  Copyright 2007 Johannes Kaestner (kaestner@theochem.uni-stuttgart.de),
+!!  Tom Keal (thomas.keal@stfc.ac.uk)
 !!
 !!  This file is part of DL-FIND.
 !!
@@ -47,10 +47,13 @@ module dlf_scalestep_module
     real(rk) :: maxrad ! maximum trust radius, from glob%maxstep
     real(rk) :: radius
     real(rk) :: minrad
+    real(rk) :: oldrad
   end type trustradius_type
 
   ! variables
-  type(trustradius_type),save :: tr
+  ! tr - global trust radius
+  ! trmic - microiterative trust radius
+  type(trustradius_type),save :: tr, trmic
 
 end module dlf_scalestep_module
 
@@ -162,6 +165,47 @@ subroutine dlf_scalestep
 end subroutine dlf_scalestep
 !!****
 
+
+
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* scalestep/dlf_scalestep_microiter
+!!
+!! FUNCTION
+!!
+!! Do a scaling of the microiterative step based on some trust radius.
+!!
+!! Trust radius only at the moment
+!!
+!! SYNOPSIS
+subroutine dlf_scalestep_microiter(nvar, step)
+!! SOURCE
+  use dlf_parameter_module, only: rk
+  use dlf_global, only: glob,stderr,printl,stdout
+  use dlf_scalestep_module, only: trmic
+  implicit none
+  !
+  integer, intent(in) :: nvar
+  real(rk), intent(inout) :: step(nvar)
+  !
+  real(rk)  :: svar
+  integer   :: ivar(1)
+! **********************************************************************
+
+  svar=dsqrt(sum(step(1:nvar)**2.0d0))
+  if(printl >= 2) then
+     write(*,"(' Predicted step length ',es10.4)") svar
+     write(*,"(' Trust radius          ',es10.4)") trmic%radius
+  end if
+  if(svar > trmic%radius) then
+     svar= trmic%radius/svar
+     step(:)= step(:) * svar
+  end if
+
+end subroutine dlf_scalestep_microiter
+!!****
+
+
+
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 !!****f* scalestep/test_acceptance
 !!
@@ -179,8 +223,9 @@ subroutine test_acceptance
   use dlf_linesearch, only: oldgradient
   implicit none
   !
-  real(rk)  :: svar,grad1,grad2
+  real(rk)  :: svar,grad1,grad2,dEOs,den
 ! **********************************************************************
+
   if (glob%iline.ne.1) &
     call dlf_fail("warning, test_acceptance should only be called for iline=1")
 
@@ -192,7 +237,10 @@ subroutine test_acceptance
     return
   end if
 
+  !JLM testing accepting the step if the energy difference is less than 5*10^-7
   if(glob%energy < glob%oldenergy) then
+  !if((glob%energy-glob%oldenergy) < 5.D-7) then
+
     ! accept step
     if(printl >=6) write(stdout,"(' Accepting step...')")
     if(printl >=6) write(stdout,"(' Energy ',es10.3,&
@@ -206,17 +254,15 @@ subroutine test_acceptance
       grad2=dot_product(glob%step(:),glob%igradient(:))
       if(printl >=6) write(stdout,*) &
             "Armijo condition fulfilled"
-      !if(grad2 >= grad1*0.6D0) then ! this is taken from the web. I think it is wrong
+      tr%radius= min(tr%radius * 1.1D0,tr%maxrad) !JLM
       if(abs(grad2) <= abs(grad1)*0.99D0) then
       !this was the curvature condition
         if(printl >=4) write(stdout,*) &
             "Wolfe conditions fulfilled, increasing trust radius"
-        tr%radius= min(tr%radius * 2.D0,tr%maxrad)
+        tr%radius= min((tr%radius * 2.D0),tr%maxrad)
       end if
     end if
-
     glob%taccepted=.true.
-
   else
     ! reject step
 
@@ -225,47 +271,187 @@ subroutine test_acceptance
     if(printl >=6) write(stdout,"(' Energy ',es10.3,&
         &' old Energy ',es10.3)") glob%energy, glob%oldenergy
 
+    tr%oldrad=tr%radius
     svar=dsqrt(dot_product(glob%step(:),glob%step(:)))
-    tr%radius= min(svar,tr%radius) * 0.5D0
+    !tr%radius= min(svar,tr%radius) * 0.5D0
+    dEOs = tr%radius*dot_product(glob%step(:),oldgradient(:))
+    !dEOs = dot_product(glob%step(:),oldgradient(:))
+    den = glob%energy - glob%oldenergy - dEOs;
+    tr%radius = (-0.5*dEOs*tr%radius)/den;
+
     if(printl >=4) write(*,"(' Trust radius          ',es10.4)") tr%radius
 
-
-    glob%step(:)= glob%step(:) * 0.5D0
-
-    ! set back coordinates
-    glob%icoords(:)= glob%icoords(:) - glob%step(:)
+    if (glob%imicroiter == 1) then
+       call dlf_microiter_reset_macrostep
+    else
+       !glob%step(:)= glob%step(:) * 0.5D0
+       glob%icoords(:)= glob%icoords(:) - glob%step(:)
+       glob%step(:)= glob%step(:) * (tr%radius/tr%oldrad)
+       glob%icoords(:)= glob%icoords(:) + glob%step(:)
+       ! set back coordinates
+       !glob%icoords(:)= glob%icoords(:) - glob%step(:)
+    end if
 
     glob%taccepted=.false.
 
+    !if((tr%radius < tr%minrad) .OR. (glob%energy == glob%oldenergy)) then
     if(tr%radius < tr%minrad) then
       if(printl >=2) write(stdout,&
           "(' Step too small, restarting optimiser.')")
       call dlf_formstep_restart
-      tr%radius=tr%maxrad
+
+      tr%radius=tr%startrad
+      tr%oldrad=tr%startrad
       glob%oldenergy=glob%energy
       glob%taccepted=.true.
 
+      !glob%oldenergy=0.D0
+      !glob%taccepted=.false.
+      !glob%icoords(:)= glob%oldCoords(:)
+      ! Removed reset of HDLCs. Doesn't work because step/itox
+      ! called before xtoi so itox will use icoords that are
+      ! inconsistent with the new HDLC system.
+
       ! reset hdlc coordinates if used
-      if(glob%icoord>=1 .and. glob%icoord<=4) then
-        call dlf_hdlc_reset
+      !if(glob%icoord>=1 .and. glob%icoord<=4) then
+      !  call dlf_hdlc_reset
         ! the arrays glob%spec,glob%znuc have to be changed when using 
         !  more instances of hdlc
-        call dlf_hdlc_create(glob%nvar/3,glob%spec,glob%znuc,1, &
-            glob%xcoords,glob%weight,glob%mass)
+      !  call dlf_hdlc_create(glob%nvar/3,glob%nicore,glob%spec,glob%micspec,&
+      !      glob%znuc,1,glob%xcoords,glob%weight,glob%mass)
         ! recalculate iweight
-        call dlf_hdlc_getweight(glob%nat,glob%nivar,glob%weight,glob%iweight)
-      end if
+      !  call dlf_hdlc_getweight(glob%nat,glob%nivar,glob%nicore,glob%micspec,&
+      !      glob%weight,glob%iweight)
+      !end if
 
 
     end if
 
   end if
 
+  write(stdout,"(' Trust radius current ',es10.4)") tr%radius
+  !write(stdout,"(' Trust radius max ',es10.4)") tr%maxrad
+
   if(printl >=6) write(*,"(' Trust radius ',es10.3)") &
       tr%radius
 
 end subroutine test_acceptance
 !!****
+
+
+! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+!!****f* scalestep/test_acceptance_microiter
+!!
+!! FUNCTION
+!!
+!! Scale the microiterative step based on the energy as acceptance criterion.
+!!
+!! TODO: Refactor - merge with standard routine?
+!!
+!! SYNOPSIS
+subroutine test_acceptance_microiter(nvar, energy, igradient, &
+     oldgradient, tmicoldenergy, oldenergy, step, icoords, taccepted, tswitch)
+!! SOURCE
+  use dlf_parameter_module, only: rk
+  use dlf_global, only: glob,stderr,stdout,printl
+  use dlf_scalestep_module, only: trmic
+  implicit none
+  !
+  integer, intent(in) :: nvar
+  real(rk), intent(in) :: energy
+  real(rk), intent(in) :: igradient(nvar), oldgradient(nvar)
+  logical, intent(in) :: tmicoldenergy
+  real(rk), intent(inout) :: oldenergy
+  real(rk), intent(inout) :: step(nvar), icoords(nvar)
+  logical, intent(out) :: taccepted
+  logical, intent(out) :: tswitch
+  real(rk)  :: svar,grad1,grad2
+! **********************************************************************
+  tswitch = .false.
+
+  if(.not. tmicoldenergy) then
+    ! first step in this microiterative cycle
+    if(printl >=6) write(stdout,"(' Accepting step as it is first in microiterative cycle')")
+    taccepted=.true.
+    return
+  end if
+
+  if(energy < oldenergy) then
+    ! accept step
+    if(printl >=6) write(stdout,"(' Accepting step...')")
+    if(printl >=6) write(stdout,"(' Energy ',es10.3,&
+        &' old Energy ',es10.3)") energy, oldenergy
+
+    ! include Wolfe conditions ... (two parameters are free to chose)
+    ! oldgradient is set in dlf_scalestep_microiter
+    grad1=dot_product(step(:),oldgradient(:))
+    if(energy < oldenergy + 1.D-4 * grad1) then
+      !this was the Armijo condition
+      grad2=dot_product(step(:),igradient(:))
+      if(printl >=6) write(stdout,*) &
+            "Armijo condition fulfilled"
+      !if(grad2 >= grad1*0.6D0) then ! this is taken from the web. I think it is wrong
+      if(abs(grad2) <= abs(grad1)*0.99D0) then
+      !this was the curvature condition
+        if(printl >=4) write(stdout,*) &
+            "Wolfe conditions fulfilled, increasing trust radius"
+        trmic%radius= min(trmic%radius * 2.D0,trmic%maxrad)
+      end if
+    end if
+
+    taccepted=.true.
+
+  else
+    ! reject step
+
+    if(printl >=2) write(stdout,"(' Rejecting step, energy ',es10.3,&
+        &' higher')") energy - oldenergy
+    if(printl >=6) write(stdout,"(' Energy ',es10.3,&
+        &' old Energy ',es10.3)") energy, oldenergy
+
+    svar=dsqrt(dot_product(step(:), step(:)))
+    trmic%radius= min(svar,trmic%radius) * 0.5D0
+    if(printl >=4) write(*,"(' Trust radius          ',es10.4)") trmic%radius
+
+
+    step(:) = step(:) * 0.5D0
+
+    ! set back coordinates
+    icoords(:) = icoords(:) - step(:)
+
+    taccepted=.false.
+
+    if(trmic%radius < trmic%minrad) then
+      if(printl >=2) write(stdout,&
+          "(' Step too small, switching to macroiterations.')")
+      trmic%radius = min(1.D-1,glob%maxstep)
+      oldenergy = energy
+      taccepted=.true.
+      tswitch = .true.
+
+      ! Probably shouldn't reset HDLC coordinates as we aren't
+      ! restarting the optimiser
+      !if(glob%icoord>=1 .and. glob%icoord<=4) then
+        !if(printl >=2) write(stdout,"(' Resetting HDLC coordinates.')") 
+        ! call dlf_hdlc_reset
+        !! the arrays glob%spec,glob%znuc have to be changed when using 
+        !!  more instances of hdlc
+        !call dlf_hdlc_create(glob%nvar/3,glob%nicore,glob%spec,glob%micspec,glob%znuc,1, &
+        !    glob%xcoords,glob%weight,glob%mass)
+        !! recalculate iweight
+        !call dlf_hdlc_getweight(glob%nat,glob%nivar,glob%nicore,glob%micspec,glob%weight,glob%iweight)
+      !end if
+
+    end if
+
+  end if
+
+  if(printl >=6) write(*,"(' Trust radius ',es10.3)") &
+      trmic%radius
+
+end subroutine test_acceptance_microiter
+!!****
+
 
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 !!****f* scalestep/test_acceptance_g
@@ -331,10 +517,15 @@ subroutine test_acceptance_g
       svar=oldproj/(oldproj-proj) * 0.9D0 ! this factor is empirical
     else
       ! this may be the case if the step is very small
-      svar=1.D0
+      svar=1.D-1
     end if
     if(svar<=-0.8D0) svar=-0.8D0 ! allow negative scaling
     if(printl >=2) write(stdout,"('scaling:',es10.3)") svar
+
+    ! TODO Implement this?
+    if (glob%imicroiter == 1) then
+       call dlf_fail("Microiterative opt with test_acceptance_g not yet implemented")
+    end if
 
     ! set back coordinates
     glob%icoords(:)= glob%icoords(:) - glob%step(:) * (1.D0-svar)
@@ -368,16 +559,37 @@ end subroutine test_acceptance_g
 subroutine linesearch_init
   use dlf_parameter_module, only: rk
   use dlf_global, only: glob
-  use dlf_scalestep_module, only: tr
+  use dlf_scalestep_module, only: tr, trmic
   use dlf_linesearch, only: oldgradient
   use dlf_allocate, only: allocate
   implicit none
 ! **********************************************************************
+  ! Microiterative trust radius init
+  ! TODO: Is there a more logical place for it to go?
+  ! Note moved before iline test in case main trust radius 
+  ! is constant.
+  ! TODO: Should micro version be linked to iline?
+  if (glob%imicroiter > 0) then
+     trmic%startrad=min(1.D-1,glob%maxstep)
+     trmic%maxrad=glob%maxstep
+     trmic%minrad=1.D-7
+     ! Initialise starting radius here - only once
+     ! Following HDLCOpt, the trust radius from the last 
+     ! microiterative cycle is retained for the next
+     trmic%radius = trmic%startrad
+  end if
+
   if (glob%iline/=1.and.glob%iline/=2.and.glob%iline/=3) return
 
-  tr%startrad=min(1.D-1,glob%maxstep)
+  !JLM
+  !tr%startrad=min(1.D-1,glob%maxstep)
+  !tr%startrad=1.0D0
+  tr%startrad=0.50
+  tr%oldrad=tr%startrad
+  !tr%startrad=glob%maxstep*0.50
   tr%maxrad=glob%maxstep
-  tr%minrad=1.D-7
+  !tr%minrad=1.D-7
+  tr%minrad=1.D-6
   call allocate(oldgradient,glob%nivar)
 
 end subroutine linesearch_init
@@ -392,7 +604,7 @@ subroutine linesearch_destroy
   integer :: fail
 ! **********************************************************************
   if (glob%iline/=1.and.glob%iline/=2.and.glob%iline/=3) return
-  call deallocate(oldgradient)
+  if (allocated(oldgradient)) call deallocate(oldgradient)
 end subroutine linesearch_destroy
 
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -409,6 +621,10 @@ subroutine linesearch
   real(rk)  :: svar,proj,newalpha,oldproj
   real(rk),save :: oldalpha,alpha
 ! **********************************************************************
+  if (glob%imicroiter == 1) then
+     call dlf_fail("Microiterative opt with linesearch not yet implemented")
+  end if
+
   if (glob%iline.ne.3) &
     call dlf_fail("linesearch should only be called for iline=3")
 
@@ -441,11 +657,11 @@ subroutine linesearch
 
     glob%taccepted=.true.
 
-    ! debug print
-    !print*,"qq Current accepted"
-    !write(*,'("qq Position ",2es15.5)') glob%icoords(:)
-    !write(*,'("qq Gradient ",2es15.5)') glob%igradient(:)
-    !write(*,'("qq Step     ",2es15.5)') glob%step(:)
+! debug print
+print*,"qq Current accepted"
+    write(*,'("qq Position ",2es15.5)') glob%icoords(:)
+    write(*,'("qq Gradient ",2es15.5)') glob%igradient(:)
+    write(*,'("qq Step     ",2es15.5)') glob%step(:)
 
     ! start values for the following line search
     alpha=1.D0
@@ -459,19 +675,19 @@ subroutine linesearch
     if(printl >=6) write(*,"(' Projection of gradient on step: ',es10.3,&
         &' oldproj ',es10.3)") proj,oldproj
 
- !write(*,"('qq Projection of gradient on step: ',es10.3,&
- !         &' energy ',es10.3)") proj,glob%energy
+ write(*,"('qq Projection of gradient on step: ',es10.3,&
+          &' energy ',es10.3)") proj,glob%energy
 
-    !write(*,'("qq Position ",2es15.5)') glob%icoords(:)
-    !write(*,'("qq Gradient ",2es15.5)') glob%igradient(:)
-    !write(*,'("qq Step     ",2es15.5)') glob%step(:)
+    write(*,'("qq Position ",2es15.5)') glob%icoords(:)
+    write(*,'("qq Gradient ",2es15.5)') glob%igradient(:)
+    write(*,'("qq Step     ",2es15.5)') glob%step(:)
 
     if(printl >=2) write(stdout,"(' Line search continuing')")
     if(printl >=6) write(stdout,"(' Projection of gradient on step: ',es10.3,&
         &' oldproj ',es10.3)") proj,oldproj
 
- !write(*,"('qq Projection of gradient on step: ',es10.3,&
- !         &' energy ',es10.3)") proj,glob%energy
+ write(*,"('qq Projection of gradient on step: ',es10.3,&
+          &' energy ',es10.3)") proj,glob%energy
 
       svar=oldproj/(oldproj-proj) 
 !!$    ! do not change the step size too drastically
@@ -499,7 +715,7 @@ subroutine linesearch
 
     glob%taccepted=.false.
 
-    !write(*,'("qq Position ",2es15.5)') glob%icoords(:)
+    write(*,'("qq Position ",2es15.5)') glob%icoords(:)
 
   end if
 
